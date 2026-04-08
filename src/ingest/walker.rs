@@ -9,8 +9,6 @@ use walkdir::WalkDir;
 pub struct SourceFile {
     pub path: PathBuf,
     pub project_name: String,
-    #[allow(dead_code)]
-    pub session_id: String,
     pub is_subagent: bool,
     pub size_bytes: u64,
     pub mtime_secs: i64,
@@ -26,10 +24,10 @@ pub fn discover_jsonl_files(data_dir: &Path) -> Result<Vec<SourceFile>> {
         .filter_map(|e| e.ok())
     {
         let path = entry.path();
-        if path.extension().is_some_and(|e| e == "jsonl") {
-            if let Some(file) = parse_file_metadata(path) {
-                files.push(file);
-            }
+        if path.extension().is_some_and(|e| e == "jsonl")
+            && let Some(file) = parse_file_metadata(path)
+        {
+            files.push(file);
         }
     }
 
@@ -55,20 +53,9 @@ fn parse_file_metadata(path: &Path) -> Option<SourceFile> {
     let path_str = path.to_string_lossy();
     let project_name = extract_project_name(&path_str);
 
-    let session_id = if is_subagent {
-        path.parent()?
-            .parent()?
-            .file_name()?
-            .to_string_lossy()
-            .to_string()
-    } else {
-        path.file_stem()?.to_string_lossy().to_string()
-    };
-
     Some(SourceFile {
         path: path.to_path_buf(),
         project_name,
-        session_id,
         is_subagent,
         size_bytes,
         mtime_secs,

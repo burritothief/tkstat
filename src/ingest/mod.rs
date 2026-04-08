@@ -19,10 +19,11 @@ pub fn sync(db: &Database, data_dir: &std::path::Path, force: bool) -> Result<us
             db.get_file_state(&file.path)?
         };
 
-        if let Some(ref st) = state {
-            if st.size_bytes == file.size_bytes as i64 && st.mtime_secs == file.mtime_secs {
-                continue;
-            }
+        if let Some(ref st) = state
+            && st.size_bytes == file.size_bytes as i64
+            && st.mtime_secs == file.mtime_secs
+        {
+            continue;
         }
 
         let offset = match &state {

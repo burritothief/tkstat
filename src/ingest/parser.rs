@@ -103,7 +103,7 @@ pub fn parse_jsonl_bytes(bytes: &[u8], file_info: &SourceFile) -> Vec<TokenRecor
             session_id: entry.session_id.unwrap_or_default(),
             uuid: entry.uuid.unwrap_or_default(),
             timestamp,
-            model: ModelFamily::from_model_str(&model_str),
+            model: ModelFamily::classify(&model_str),
             model_raw: model_str,
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
@@ -136,7 +136,6 @@ mod tests {
         SourceFile {
             path: PathBuf::from("/test/projects/-Users-test-src-myproj/abc.jsonl"),
             project_name: "myproj".into(),
-            session_id: "abc-123".into(),
             is_subagent: false,
             size_bytes: 0,
             mtime_secs: 0,
@@ -230,7 +229,6 @@ mod tests {
         let fi = SourceFile {
             path: PathBuf::from("/x/projects/-Users-me-src-coolproj/sess.jsonl"),
             project_name: "coolproj".into(),
-            session_id: "sess-id".into(),
             is_subagent: true,
             size_bytes: 100,
             mtime_secs: 12345,

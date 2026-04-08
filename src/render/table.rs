@@ -39,9 +39,11 @@ pub fn render_table(
                 last_date_group = Some(date);
                 out.push_str(&format!(" {date}\n"));
             }
-            out.push_str(&format_row(time, row, columns));
+            // Indent time labels to half the period column width
+            let indent = PERIOD_COL_WIDTH / 2;
+            out.push_str(&format_row_width(time, row, columns, indent));
         } else {
-            out.push_str(&format_row(&row.period, row, columns));
+            out.push_str(&format_row(row.period.as_str(), row, columns));
         }
     }
 
@@ -65,8 +67,14 @@ fn build_separator(columns: &[Column]) -> String {
 }
 
 fn format_row(label: &str, row: &AggregatedRow, columns: &[Column]) -> String {
+    format_row_width(label, row, columns, PERIOD_COL_WIDTH)
+}
+
+fn format_row_width(label: &str, row: &AggregatedRow, columns: &[Column], label_width: usize) -> String {
     let is_empty = row.request_count == 0;
-    let mut s = format!(" {:>PERIOD_COL_WIDTH$}", label);
+    // Pad to align with the full PERIOD_COL_WIDTH
+    let padding = PERIOD_COL_WIDTH - label_width;
+    let mut s = format!(" {:>label_width$}{:padding$}", label, "");
     for (i, col) in columns.iter().enumerate() {
         if i > 0 { s.push_str(" |"); }
         let val = if is_empty { "-".to_string() } else { col.format_value(row) };
