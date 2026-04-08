@@ -203,9 +203,23 @@ fn fill_gaps(period: TimePeriod, rows: Vec<AggregatedRow>) -> Vec<AggregatedRow>
     let last = &rows[rows.len() - 1].period;
 
     let labels = match period {
-        TimePeriod::FiveMinutes => generate_5min_labels(first, last),
-        TimePeriod::Hourly => generate_hourly_labels(first, last),
-        TimePeriod::Daily => generate_daily_labels(first, last),
+        TimePeriod::FiveMinutes => generate_time_labels(
+            first,
+            last,
+            "%Y-%m-%d %H:%M",
+            TimeDelta::minutes(5),
+            "%Y-%m-%d %H:%M",
+        ),
+        TimePeriod::Hourly => generate_time_labels(
+            first,
+            last,
+            "%Y-%m-%d %H:%M",
+            TimeDelta::hours(1),
+            "%Y-%m-%d %H:00",
+        ),
+        TimePeriod::Daily => {
+            generate_time_labels(first, last, "%Y-%m-%d", TimeDelta::days(1), "%Y-%m-%d")
+        }
         TimePeriod::Monthly => generate_monthly_labels(first, last),
         TimePeriod::Yearly => return rows,
     };
@@ -223,38 +237,31 @@ fn fill_gaps(period: TimePeriod, rows: Vec<AggregatedRow>) -> Vec<AggregatedRow>
         .collect()
 }
 
-fn generate_5min_labels(first: &str, last: &str) -> Option<Vec<String>> {
-    let start = NaiveDateTime::parse_from_str(first, "%Y-%m-%d %H:%M").ok()?;
-    let end = NaiveDateTime::parse_from_str(last, "%Y-%m-%d %H:%M").ok()?;
+/// Generate gap-filling labels for sub-daily and daily periods.
+/// Parses first/last with `parse_fmt`, steps by `delta`, formats output with `out_fmt`.
+fn generate_time_labels(
+    first: &str,
+    last: &str,
+    parse_fmt: &str,
+    delta: TimeDelta,
+    out_fmt: &str,
+) -> Option<Vec<String>> {
+    let parse = |s: &str| -> Option<NaiveDateTime> {
+        NaiveDateTime::parse_from_str(s, parse_fmt)
+            .ok()
+            .or_else(|| {
+                NaiveDate::parse_from_str(s, parse_fmt)
+                    .ok()
+                    .and_then(|d| d.and_hms_opt(0, 0, 0))
+            })
+    };
+    let start = parse(first)?;
+    let end = parse(last)?;
     let mut labels = Vec::new();
     let mut current = start;
     while current <= end {
-        labels.push(current.format("%Y-%m-%d %H:%M").to_string());
-        current += TimeDelta::minutes(5);
-    }
-    Some(labels)
-}
-
-fn generate_hourly_labels(first: &str, last: &str) -> Option<Vec<String>> {
-    let start = NaiveDateTime::parse_from_str(first, "%Y-%m-%d %H:%M").ok()?;
-    let end = NaiveDateTime::parse_from_str(last, "%Y-%m-%d %H:%M").ok()?;
-    let mut labels = Vec::new();
-    let mut current = start;
-    while current <= end {
-        labels.push(current.format("%Y-%m-%d %H:00").to_string());
-        current += TimeDelta::hours(1);
-    }
-    Some(labels)
-}
-
-fn generate_daily_labels(first: &str, last: &str) -> Option<Vec<String>> {
-    let start = NaiveDate::parse_from_str(first, "%Y-%m-%d").ok()?;
-    let end = NaiveDate::parse_from_str(last, "%Y-%m-%d").ok()?;
-    let mut labels = Vec::new();
-    let mut current = start;
-    while current <= end {
-        labels.push(current.format("%Y-%m-%d").to_string());
-        current += TimeDelta::days(1);
+        labels.push(current.format(out_fmt).to_string());
+        current += delta;
     }
     Some(labels)
 }
@@ -466,7 +473,14 @@ mod tests {
 
     #[test]
     fn test_gap_fill_daily_labels() {
-        let labels = generate_daily_labels("2026-04-01", "2026-04-05").unwrap();
+        let labels = generate_time_labels(
+            "2026-04-01",
+            "2026-04-05",
+            "%Y-%m-%d",
+            TimeDelta::days(1),
+            "%Y-%m-%d",
+        )
+        .unwrap();
         assert_eq!(labels.len(), 5);
         assert_eq!(labels[0], "2026-04-01");
         assert_eq!(labels[4], "2026-04-05");
@@ -474,13 +488,27 @@ mod tests {
 
     #[test]
     fn test_gap_fill_hourly_labels() {
-        let labels = generate_hourly_labels("2026-04-01 10:00", "2026-04-01 14:00").unwrap();
+        let labels = generate_time_labels(
+            "2026-04-01 10:00",
+            "2026-04-01 14:00",
+            "%Y-%m-%d %H:%M",
+            TimeDelta::hours(1),
+            "%Y-%m-%d %H:00",
+        )
+        .unwrap();
         assert_eq!(labels.len(), 5);
     }
 
     #[test]
     fn test_gap_fill_5min_labels() {
-        let labels = generate_5min_labels("2026-04-01 10:00", "2026-04-01 10:20").unwrap();
+        let labels = generate_time_labels(
+            "2026-04-01 10:00",
+            "2026-04-01 10:20",
+            "%Y-%m-%d %H:%M",
+            TimeDelta::minutes(5),
+            "%Y-%m-%d %H:%M",
+        )
+        .unwrap();
         assert_eq!(labels.len(), 5);
         assert_eq!(labels[1], "2026-04-01 10:05");
     }

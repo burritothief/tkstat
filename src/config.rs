@@ -34,7 +34,7 @@ pub fn resolve_data_dir(cli_override: Option<&str>) -> Result<PathBuf> {
         }
     }
 
-    Err(crate::error::TkstatError::NoDataDir.into())
+    anyhow::bail!("no claude data directory found; expected ~/.claude/projects")
 }
 
 /// Resolve the database path.
