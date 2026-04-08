@@ -117,7 +117,7 @@ pub struct Cli {
     #[arg(long = "columns", value_name = "COLS")]
     pub columns: Option<String>,
 
-    /// Disable colors
+    /// Disable colors (set NO_COLOR=1 env var instead)
     #[arg(long = "no-color")]
     pub no_color: bool,
 

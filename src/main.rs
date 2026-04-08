@@ -10,6 +10,11 @@ use tkstat::{config, db, ingest, render};
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    if cli.no_color {
+        // SAFETY: set_var is called before any threads are spawned.
+        unsafe { std::env::set_var("NO_COLOR", "1") };
+    }
+
     let data_dir = config::resolve_data_dir(cli.data_dir.as_deref())?;
     let db_path = config::resolve_db_path(cli.db_path.as_deref());
     let database = db::Database::open(&db_path)?;
@@ -42,17 +47,20 @@ fn main() -> Result<()> {
     let output = match cli.output_mode() {
         OutputMode::Heatmap | OutputMode::Chart => {
             let daily = db::query::query_daily_totals(database.conn(), &filter)?;
+            let metric = cli.chart_metric;
             let chart_data: Vec<(String, f64)> = daily
                 .into_iter()
-                .map(|(date, tokens, cost)| {
-                    let val = match cli.chart_metric {
-                        ChartMetric::Cost => cost,
-                        _ => tokens as f64,
+                .map(|d| {
+                    let val = match metric {
+                        ChartMetric::Tokens => d.total_tokens as f64,
+                        ChartMetric::Cost => d.cost_usd,
+                        ChartMetric::Input => d.input_tokens as f64,
+                        ChartMetric::Output => d.output_tokens as f64,
                     };
-                    (date, val)
+                    (d.date, val)
                 })
                 .collect();
-            let metric_label = format!("{:?}", cli.chart_metric).to_lowercase();
+            let metric_label = format!("{metric:?}").to_lowercase();
             if cli.heatmap {
                 render::heatmap::render_heatmap(&chart_data, &metric_label)
             } else {

@@ -128,17 +128,29 @@ pub fn query_summary(conn: &Connection, filter: &QueryFilter) -> Result<Aggregat
     Ok(stmt.query_row(param_refs.as_slice(), row_to_aggregated)?)
 }
 
+/// Daily totals for heatmap and chart rendering.
+#[derive(Debug)]
+pub struct DailyTotal {
+    pub date: String,
+    pub total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
+}
+
 /// Query daily totals for heatmap and chart rendering.
 pub fn query_daily_totals(
     conn: &Connection,
     filter: &QueryFilter,
-) -> Result<Vec<(String, u64, f64)>> {
+) -> Result<Vec<DailyTotal>> {
     let (where_clause, params) = build_where_clause(filter);
 
     let sql = format!(
         "SELECT
             date(timestamp, 'localtime') AS day,
             SUM(total_tokens),
+            SUM(input_tokens),
+            SUM(output_tokens),
             SUM(cost_usd)
          FROM token_usage
          WHERE 1=1 {where_clause}
@@ -150,13 +162,15 @@ pub fn query_daily_totals(
         params.iter().map(|p| p.as_ref()).collect();
 
     let mut stmt = conn.prepare(&sql)?;
-    let rows: Vec<(String, u64, f64)> = stmt
+    let rows = stmt
         .query_map(param_refs.as_slice(), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)? as u64,
-                row.get::<_, f64>(2)?,
-            ))
+            Ok(DailyTotal {
+                date: row.get(0)?,
+                total_tokens: row.get::<_, i64>(1).map(|v| v.max(0) as u64)?,
+                input_tokens: row.get::<_, i64>(2).map(|v| v.max(0) as u64)?,
+                output_tokens: row.get::<_, i64>(3).map(|v| v.max(0) as u64)?,
+                cost_usd: row.get(4)?,
+            })
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -165,16 +179,17 @@ pub fn query_daily_totals(
 
 /// Shared row mapper for all aggregation queries.
 fn row_to_aggregated(row: &rusqlite::Row<'_>) -> rusqlite::Result<AggregatedRow> {
+    let safe_u64 = |v: i64| -> u64 { v.max(0) as u64 };
     Ok(AggregatedRow {
         period: row.get(0)?,
-        input_tokens: row.get::<_, i64>(1)? as u64,
-        output_tokens: row.get::<_, i64>(2)? as u64,
-        cache_creation_tokens: row.get::<_, i64>(3)? as u64,
-        cache_read_tokens: row.get::<_, i64>(4)? as u64,
-        total_tokens: row.get::<_, i64>(5)? as u64,
+        input_tokens: row.get::<_, i64>(1).map(safe_u64)?,
+        output_tokens: row.get::<_, i64>(2).map(safe_u64)?,
+        cache_creation_tokens: row.get::<_, i64>(3).map(safe_u64)?,
+        cache_read_tokens: row.get::<_, i64>(4).map(safe_u64)?,
+        total_tokens: row.get::<_, i64>(5).map(safe_u64)?,
         cost_usd: row.get(6)?,
-        request_count: row.get::<_, i64>(7)? as u64,
-        session_count: row.get::<_, i64>(8)? as u64,
+        request_count: row.get::<_, i64>(7).map(safe_u64)?,
+        session_count: row.get::<_, i64>(8).map(safe_u64)?,
     })
 }
 
@@ -477,6 +492,6 @@ mod tests {
         let filter = QueryFilter { include_subagents: true, ..Default::default() };
         let totals = query_daily_totals(db.conn(), &filter).unwrap();
         assert!(totals.len() >= 2);
-        assert!(totals.first().unwrap().0 <= totals.last().unwrap().0);
+        assert!(totals.first().unwrap().date <= totals.last().unwrap().date);
     }
 }

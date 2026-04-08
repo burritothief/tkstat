@@ -82,8 +82,10 @@ pub fn render_braille(
             "            {}",
             first.0,
         ));
-        let padding = CHART_WIDTH as usize * 2 - first.0.len() - last.0.len();
-        for _ in 0..padding.min(60) {
+        let padding = (CHART_WIDTH as usize * 2)
+            .saturating_sub(first.0.len())
+            .saturating_sub(last.0.len());
+        for _ in 0..padding {
             out.push(' ');
         }
         out.push_str(&format!("{}\n", last.0));

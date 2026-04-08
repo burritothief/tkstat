@@ -2,7 +2,8 @@ use crate::domain::usage::AggregatedRow;
 
 /// Render aggregated rows as a JSON array.
 pub fn render_json(rows: &[AggregatedRow]) -> String {
-    serde_json::to_string_pretty(rows).unwrap_or_else(|_| "[]".into())
+    // AggregatedRow has only primitive Serialize fields — serialization is infallible.
+    serde_json::to_string_pretty(rows).expect("AggregatedRow serialization is infallible")
 }
 
 #[cfg(test)]

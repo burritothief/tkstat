@@ -45,3 +45,33 @@ impl fmt::Display for TimePeriod {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_display() {
+        assert_eq!(TimePeriod::FiveMinutes.to_string(), "5 minutes");
+        assert_eq!(TimePeriod::Hourly.to_string(), "hourly");
+        assert_eq!(TimePeriod::Daily.to_string(), "daily");
+        assert_eq!(TimePeriod::Monthly.to_string(), "monthly");
+        assert_eq!(TimePeriod::Yearly.to_string(), "yearly");
+    }
+
+    #[test]
+    fn test_default_limits() {
+        assert_eq!(TimePeriod::FiveMinutes.default_limit(), 40);
+        assert_eq!(TimePeriod::Hourly.default_limit(), 30);
+        assert_eq!(TimePeriod::Daily.default_limit(), 30);
+        assert_eq!(TimePeriod::Monthly.default_limit(), 12);
+        assert_eq!(TimePeriod::Yearly.default_limit(), 10);
+    }
+
+    #[test]
+    fn test_sql_group_expr_not_empty() {
+        for period in [TimePeriod::FiveMinutes, TimePeriod::Hourly, TimePeriod::Daily, TimePeriod::Monthly, TimePeriod::Yearly] {
+            assert!(!period.sql_group_expr().is_empty());
+        }
+    }
+}

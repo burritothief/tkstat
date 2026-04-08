@@ -12,7 +12,7 @@ pub enum ModelFamily {
 }
 
 impl ModelFamily {
-    pub fn from_model_str(s: &str) -> Self {
+    pub fn classify(s: &str) -> Self {
         let s = s.to_ascii_lowercase();
         if s.contains("opus") {
             Self::Opus
@@ -139,12 +139,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_model_family_from_model_str() {
-        assert_eq!(ModelFamily::from_model_str("claude-opus-4-6"), ModelFamily::Opus);
-        assert_eq!(ModelFamily::from_model_str("claude-sonnet-4-5-20250929"), ModelFamily::Sonnet);
-        assert_eq!(ModelFamily::from_model_str("claude-haiku-4-5-20251001"), ModelFamily::Haiku);
-        assert_eq!(ModelFamily::from_model_str("sonnet"), ModelFamily::Sonnet);
-        assert_eq!(ModelFamily::from_model_str("gpt-4"), ModelFamily::Unknown);
+    fn test_model_family_classify() {
+        assert_eq!(ModelFamily::classify("claude-opus-4-6"), ModelFamily::Opus);
+        assert_eq!(ModelFamily::classify("claude-sonnet-4-5-20250929"), ModelFamily::Sonnet);
+        assert_eq!(ModelFamily::classify("claude-haiku-4-5-20251001"), ModelFamily::Haiku);
+        assert_eq!(ModelFamily::classify("sonnet"), ModelFamily::Sonnet);
+        assert_eq!(ModelFamily::classify("gpt-4"), ModelFamily::Unknown);
     }
 
     #[test]
@@ -182,5 +182,50 @@ mod tests {
         assert_eq!(format_cost(1.23), "$1.23");
         assert_eq!(format_cost(45.6), "$45.6");
         assert_eq!(format_cost(123.0), "$123");
+    }
+
+    #[test]
+    fn test_format_tokens_all_ranges() {
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(999), "999");
+        assert_eq!(format_tokens(1_000), "1.0 K");
+        assert_eq!(format_tokens(99_999), "100.0 K");
+        assert_eq!(format_tokens(100_000), "100 K");
+        assert_eq!(format_tokens(999_999), "999 K");
+        assert_eq!(format_tokens(1_000_000), "1.0 M");
+        assert_eq!(format_tokens(99_999_999), "100.0 M");
+        assert_eq!(format_tokens(100_000_000), "100 M");
+        assert_eq!(format_tokens(1_000_000_000), "1.0 B");
+    }
+
+    #[test]
+    fn test_format_cost_edge_cases() {
+        assert_eq!(format_cost(0.0), "$0.00");
+        assert_eq!(format_cost(0.009), "$0.00");
+        assert_eq!(format_cost(0.01), "$0.01");
+        assert_eq!(format_cost(9.99), "$9.99");
+        assert_eq!(format_cost(10.0), "$10.0");
+        assert_eq!(format_cost(99.9), "$99.9");
+        assert_eq!(format_cost(100.0), "$100");
+        assert_eq!(format_cost(1000.5), "$1000");
+    }
+
+    #[test]
+    fn test_model_family_display() {
+        assert_eq!(ModelFamily::Opus.to_string(), "opus");
+        assert_eq!(ModelFamily::Unknown.to_string(), "unknown");
+    }
+
+    #[test]
+    fn test_model_family_classify_case_insensitive() {
+        assert_eq!(ModelFamily::classify("Claude-OPUS-4-6"), ModelFamily::Opus);
+        assert_eq!(ModelFamily::classify("SONNET"), ModelFamily::Sonnet);
+    }
+
+    #[test]
+    fn test_aggregated_row_sum_empty() {
+        let total = AggregatedRow::sum(&[]);
+        assert_eq!(total.total_tokens, 0);
+        assert_eq!(total.period, "total");
     }
 }

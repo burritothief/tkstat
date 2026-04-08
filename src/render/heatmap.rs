@@ -29,6 +29,15 @@ fn interpolate_color(t: f64) -> (u8, u8, u8) {
     (lerp(r0, r1, frac), lerp(g0, g1, frac), lerp(b0, b1, frac))
 }
 
+/// Format a colored block or fall back to a plain block if NO_COLOR is set.
+fn colored_block(r: u8, g: u8, b: u8) -> String {
+    if std::env::var_os("NO_COLOR").is_some() {
+        BLOCK.to_string()
+    } else {
+        format!("{}", BLOCK.truecolor(r, g, b))
+    }
+}
+
 /// Render a contribution heatmap from daily data.
 pub fn render_heatmap(daily_data: &[(String, f64)], metric_label: &str) -> String {
     if daily_data.is_empty() {
@@ -47,33 +56,28 @@ pub fn render_heatmap(daily_data: &[(String, f64)], metric_label: &str) -> Strin
     }
 
     let today = Local::now().date_naive();
-    let start_month = NaiveDate::from_ymd_opt(today.year() - 1, today.month(), 1).unwrap();
+    let Some(start_month) = NaiveDate::from_ymd_opt(today.year() - 1, today.month(), 1) else {
+        return format!(" claude / heatmap ({metric_label})\n No data available.\n");
+    };
     let end_month = if today.month() == 12 {
-        NaiveDate::from_ymd_opt(today.year() + 1, 1, 1).unwrap() - TimeDelta::days(1)
+        NaiveDate::from_ymd_opt(today.year() + 1, 1, 1)
     } else {
-        NaiveDate::from_ymd_opt(today.year(), today.month() + 1, 1).unwrap() - TimeDelta::days(1)
+        NaiveDate::from_ymd_opt(today.year(), today.month() + 1, 1)
+    };
+    let Some(end_month) = end_month.map(|d| d - TimeDelta::days(1)) else {
+        return format!(" claude / heatmap ({metric_label})\n No data available.\n");
     };
 
     let start = start_month - TimeDelta::days(start_month.weekday().num_days_from_sunday() as i64);
     let end = end_month + TimeDelta::days(6 - end_month.weekday().num_days_from_sunday() as i64);
 
-    // Log-scale normalization so colors spread across the actual distribution
-    // instead of clustering near the lightest color.
     let max_val = by_date.values().cloned().fold(0.0f64, f64::max);
     let log_max = if max_val > 1.0 { max_val.ln() } else { 1.0 };
-
-    // Count total week columns for alignment
-    let total_weeks = {
-        let mut n = 0;
-        let mut d = start;
-        while d <= end { n += 1; d += TimeDelta::days(7); }
-        n
-    };
 
     let label_pad = "     ";
     let mut out = format!(" claude / heatmap ({metric_label})\n\n");
 
-    // Month labels — 1 char per week column, abbreviation bleeds across columns.
+    // Month labels
     out.push_str(label_pad);
     let mut current = start;
     let mut last_month_year: Option<(u32, i32)> = None;
@@ -118,7 +122,7 @@ pub fn render_heatmap(daily_data: &[(String, f64)], metric_label: &str) -> Strin
             } else {
                 let t = if val >= max_val { 1.0 } else { val.ln() / log_max };
                 let (r, g, b) = interpolate_color(t.max(0.0));
-                out.push_str(&format!("{}", BLOCK.truecolor(r, g, b)));
+                out.push_str(&colored_block(r, g, b));
             }
             day += TimeDelta::days(7);
         }
@@ -129,7 +133,7 @@ pub fn render_heatmap(daily_data: &[(String, f64)], metric_label: &str) -> Strin
     for i in 0..8 {
         let t = i as f64 / 7.0;
         let (r, g, b) = interpolate_color(t);
-        out.push_str(&format!("{}", BLOCK.truecolor(r, g, b)));
+        out.push_str(&colored_block(r, g, b));
     }
     out.push_str(" More\n");
 
@@ -195,10 +199,8 @@ mod tests {
         let data = vec![("2026-04-01".into(), 100.0), ("2026-04-07".into(), 200.0)];
         let output = render_heatmap(&data, "tokens");
         let lines: Vec<&str> = output.lines().collect();
-        // Find the range between the month header and the legend
-        let first_data = lines.iter().position(|l| l.contains("Mon") || l.contains("·")).unwrap_or(0);
+        let first_data = lines.iter().position(|l| l.contains("Mon") || l.contains(EMPTY)).unwrap_or(0);
         let legend = lines.iter().position(|l| l.contains("Less")).unwrap_or(lines.len());
-        // Between first data row and legend, count non-empty lines
         let data_rows = lines[first_data..legend].iter().filter(|l| !l.is_empty()).count();
         assert_eq!(data_rows, 7, "should have 7 rows (Sun-Sat), got {data_rows}");
     }
@@ -208,10 +210,9 @@ mod tests {
         let data = vec![("2026-04-05".into(), 100.0)];
         let output = render_heatmap(&data, "tokens");
         let lines: Vec<&str> = output.lines().collect();
-        // Find the Mon row and check the row before it doesn't say Mon
         let mon_idx = lines.iter().position(|l| l.contains(" Mon ")).unwrap();
         assert!(mon_idx > 0);
-        assert!(!lines[mon_idx - 1].contains("Mon"), "row before Mon should be Sunday");
+        assert!(!lines[mon_idx - 1].contains("Mon"));
     }
 
     #[test]
@@ -224,5 +225,12 @@ mod tests {
     fn test_interpolate_color_clamps() {
         assert_eq!(interpolate_color(-1.0), interpolate_color(0.0));
         assert_eq!(interpolate_color(2.0), interpolate_color(1.0));
+    }
+
+    #[test]
+    fn test_interpolate_color_midpoint() {
+        let (r, g, b) = interpolate_color(0.5);
+        // Should be in the middle of the blues spectrum
+        assert!(r < 150 && g > 100 && b > 180);
     }
 }
