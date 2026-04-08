@@ -13,8 +13,12 @@ mod tests {
     #[test]
     fn test_json_output_valid() {
         let rows = vec![AggregatedRow {
-            period: "2026-04-07".into(), input_tokens: 100, total_tokens: 470,
-            cost_usd: 0.12, request_count: 3, ..Default::default()
+            period: "2026-04-07".into(),
+            input_tokens: 100,
+            total_tokens: 470,
+            cost_usd: 0.12,
+            request_count: 3,
+            ..Default::default()
         }];
         let json = render_json(&rows);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();

@@ -1,4 +1,4 @@
-use crate::domain::usage::{format_cost, format_tokens, AggregatedRow};
+use crate::domain::usage::{AggregatedRow, format_cost, format_tokens};
 
 /// Available table columns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +26,10 @@ impl std::str::FromStr for Column {
             "cost" => Ok(Self::Cost),
             "reqs" | "requests" | "req" => Ok(Self::Requests),
             "sessions" | "sess" => Ok(Self::Sessions),
-            _ => Err(format!("unknown column '{s}'. Available: {}", Self::available_names())),
+            _ => Err(format!(
+                "unknown column '{s}'. Available: {}",
+                Self::available_names()
+            )),
         }
     }
 }

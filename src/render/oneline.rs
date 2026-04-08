@@ -1,4 +1,4 @@
-use crate::domain::usage::{format_cost, format_tokens, AggregatedRow};
+use crate::domain::usage::{AggregatedRow, format_cost, format_tokens};
 
 /// Render a single-line summary, semicolon-delimited (like vnstat --oneline).
 /// Format: total_tokens;input;output;cache_rd;cache_cr;cost;requests;sessions
@@ -23,9 +23,15 @@ mod tests {
     #[test]
     fn test_oneline_format() {
         let row = AggregatedRow {
-            total_tokens: 4700, input_tokens: 1000, output_tokens: 500,
-            cache_creation_tokens: 200, cache_read_tokens: 3000, cost_usd: 0.12,
-            request_count: 3, session_count: 1, ..Default::default()
+            total_tokens: 4700,
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_creation_tokens: 200,
+            cache_read_tokens: 3000,
+            cost_usd: 0.12,
+            request_count: 3,
+            session_count: 1,
+            ..Default::default()
         };
         let line = render_oneline(&row);
         assert!(line.ends_with('\n'));

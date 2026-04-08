@@ -14,18 +14,18 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     )?;
 
     let current: Option<i64> = conn
-        .query_row(
-            "SELECT version FROM schema_version LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+            row.get(0)
+        })
         .ok();
 
     match current {
         Some(v) if v >= SCHEMA_VERSION => {}
         _ => {
             // Drop old tables and recreate (pre-1.0, no migration path needed)
-            conn.execute_batch("DROP TABLE IF EXISTS token_usage; DROP TABLE IF EXISTS file_state;")?;
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS token_usage; DROP TABLE IF EXISTS file_state;",
+            )?;
             create_tables(conn)?;
             set_version(conn, SCHEMA_VERSION)?;
         }

@@ -76,7 +76,12 @@ pub struct Cli {
     pub chart: bool,
 
     /// Metric for chart/heatmap
-    #[arg(long = "chart-metric", value_name = "METRIC", value_enum, default_value = "tokens")]
+    #[arg(
+        long = "chart-metric",
+        value_name = "METRIC",
+        value_enum,
+        default_value = "tokens"
+    )]
     pub chart_metric: ChartMetric,
 
     // -- Filters --
@@ -167,7 +172,11 @@ impl Cli {
         } else if self.oneline {
             OutputMode::Oneline
         } else if self.json {
-            if self.top.is_some() { OutputMode::TopDays } else { OutputMode::Json(period) }
+            if self.top.is_some() {
+                OutputMode::TopDays
+            } else {
+                OutputMode::Json(period)
+            }
         } else if self.top.is_some() {
             OutputMode::TopDays
         } else {

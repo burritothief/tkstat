@@ -51,8 +51,7 @@ pub fn parse_jsonl_file(
     offset: u64,
     file_info: &SourceFile,
 ) -> Result<Vec<TokenRecord>> {
-    let mut file = File::open(path)
-        .with_context(|| format!("opening {}", path.display()))?;
+    let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
 
     if offset > 0 {
         file.seek(SeekFrom::Start(offset))?;
@@ -88,7 +87,9 @@ pub fn parse_jsonl_bytes(bytes: &[u8], file_info: &SourceFile) -> Vec<TokenRecor
 
         let Some(msg) = entry.message else { continue };
         let Some(usage) = msg.usage else { continue };
-        let Some(ref request_id) = entry.request_id else { continue };
+        let Some(ref request_id) = entry.request_id else {
+            continue;
+        };
         if request_id.is_empty() {
             continue;
         }
@@ -96,7 +97,9 @@ pub fn parse_jsonl_bytes(bytes: &[u8], file_info: &SourceFile) -> Vec<TokenRecor
         if model_str.is_empty() || model_str == "<synthetic>" {
             continue;
         }
-        let Some(timestamp) = entry.timestamp else { continue };
+        let Some(timestamp) = entry.timestamp else {
+            continue;
+        };
 
         let record = TokenRecord {
             request_id: request_id.clone(),
@@ -190,19 +193,28 @@ mod tests {
     #[test]
     fn test_skips_synthetic_model() {
         let line = assistant_line("req1", "<synthetic>", 10);
-        assert_eq!(parse_jsonl_bytes(line.as_bytes(), &make_source_file()).len(), 0);
+        assert_eq!(
+            parse_jsonl_bytes(line.as_bytes(), &make_source_file()).len(),
+            0
+        );
     }
 
     #[test]
     fn test_skips_empty_request_id() {
         let line = r#"{"type":"assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":10,"output_tokens":5}},"requestId":"","uuid":"u1","timestamp":"2026-04-07T10:00:00Z","sessionId":"s1"}"#;
-        assert_eq!(parse_jsonl_bytes(line.as_bytes(), &make_source_file()).len(), 0);
+        assert_eq!(
+            parse_jsonl_bytes(line.as_bytes(), &make_source_file()).len(),
+            0
+        );
     }
 
     #[test]
     fn test_skips_missing_request_id() {
         let line = r#"{"type":"assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":10,"output_tokens":5}},"uuid":"u1","timestamp":"2026-04-07T10:00:00Z","sessionId":"s1"}"#;
-        assert_eq!(parse_jsonl_bytes(line.as_bytes(), &make_source_file()).len(), 0);
+        assert_eq!(
+            parse_jsonl_bytes(line.as_bytes(), &make_source_file()).len(),
+            0
+        );
     }
 
     #[test]
@@ -212,7 +224,10 @@ mod tests {
             assistant_line("req1", "claude-opus-4-6", 10),
             assistant_line("req2", "claude-haiku-4-5-20251001", 20),
         );
-        assert_eq!(parse_jsonl_bytes(lines.as_bytes(), &make_source_file()).len(), 2);
+        assert_eq!(
+            parse_jsonl_bytes(lines.as_bytes(), &make_source_file()).len(),
+            2
+        );
     }
 
     #[test]
@@ -221,7 +236,10 @@ mod tests {
             "this is not json\n{}\n{{broken json\n",
             assistant_line("req1", "claude-opus-4-6", 10),
         );
-        assert_eq!(parse_jsonl_bytes(lines.as_bytes(), &make_source_file()).len(), 1);
+        assert_eq!(
+            parse_jsonl_bytes(lines.as_bytes(), &make_source_file()).len(),
+            1
+        );
     }
 
     #[test]

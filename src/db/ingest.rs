@@ -30,10 +30,10 @@ pub fn batch_insert(conn: &Connection, records: &[TokenRecord]) -> Result<usize>
                 r.timestamp.to_rfc3339(),
                 r.model.as_str(),
                 r.model_raw,
-                r.input_tokens,
-                r.output_tokens,
-                r.cache_creation_tokens,
-                r.cache_read_tokens,
+                r.input_tokens as i64,
+                r.output_tokens as i64,
+                r.cache_creation_tokens as i64,
+                r.cache_read_tokens as i64,
                 r.cost_usd,
                 r.project,
                 r.source_file,
@@ -80,7 +80,8 @@ mod tests {
         let count = db.insert_records(&records).unwrap();
         assert_eq!(count, 2);
 
-        let total: i64 = db.conn()
+        let total: i64 = db
+            .conn()
             .query_row("SELECT COUNT(*) FROM token_usage", [], |row| row.get(0))
             .unwrap();
         assert_eq!(total, 2);
@@ -105,7 +106,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         db.insert_records(&[make_record("r1", 42)]).unwrap();
 
-        let (output, cost): (i64, f64) = db.conn()
+        let (output, cost): (i64, f64) = db
+            .conn()
             .query_row(
                 "SELECT output_tokens, cost_usd FROM token_usage WHERE request_id = 'r1'",
                 [],

@@ -14,7 +14,9 @@ impl TimePeriod {
     /// SQL expression to bucket timestamps into this period.
     pub fn sql_group_expr(&self) -> &'static str {
         match self {
-            Self::FiveMinutes => "strftime('%Y-%m-%d %H:', timestamp, 'localtime') || printf('%02d', (cast(strftime('%M', timestamp, 'localtime') as integer) / 5) * 5)",
+            Self::FiveMinutes => {
+                "strftime('%Y-%m-%d %H:', timestamp, 'localtime') || printf('%02d', (cast(strftime('%M', timestamp, 'localtime') as integer) / 5) * 5)"
+            }
             Self::Hourly => "strftime('%Y-%m-%d %H:00', timestamp, 'localtime')",
             Self::Daily => "date(timestamp, 'localtime')",
             Self::Monthly => "strftime('%Y-%m', timestamp, 'localtime')",
@@ -70,7 +72,13 @@ mod tests {
 
     #[test]
     fn test_sql_group_expr_not_empty() {
-        for period in [TimePeriod::FiveMinutes, TimePeriod::Hourly, TimePeriod::Daily, TimePeriod::Monthly, TimePeriod::Yearly] {
+        for period in [
+            TimePeriod::FiveMinutes,
+            TimePeriod::Hourly,
+            TimePeriod::Daily,
+            TimePeriod::Monthly,
+            TimePeriod::Yearly,
+        ] {
             assert!(!period.sql_group_expr().is_empty());
         }
     }

@@ -8,10 +8,7 @@ const CHART_HEIGHT: u32 = 15;
 
 /// Render a braille-dot time series chart from daily data.
 /// `daily_data` is (date_string, value) pairs in chronological order.
-pub fn render_braille(
-    daily_data: &[(String, f64)],
-    metric_label: &str,
-) -> String {
+pub fn render_braille(daily_data: &[(String, f64)], metric_label: &str) -> String {
     if daily_data.is_empty() {
         return format!(" claude / chart ({metric_label})\n No data available.\n");
     }
@@ -78,10 +75,7 @@ pub fn render_braille(
 
     // X-axis labels
     if let (Some(first), Some(last)) = (daily_data.first(), daily_data.last()) {
-        out.push_str(&format!(
-            "            {}",
-            first.0,
-        ));
+        out.push_str(&format!("            {}", first.0,));
         let padding = (CHART_WIDTH as usize * 2)
             .saturating_sub(first.0.len())
             .saturating_sub(last.0.len());

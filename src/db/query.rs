@@ -45,8 +45,7 @@ pub fn query_by_period(
          ORDER BY {group_expr} ASC",
     );
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
     let mut stmt = conn.prepare(&sql)?;
     let result: Vec<AggregatedRow> = stmt
@@ -121,8 +120,7 @@ pub fn query_summary(conn: &Connection, filter: &QueryFilter) -> Result<Aggregat
          WHERE 1=1 {where_clause}"
     );
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
     let mut stmt = conn.prepare(&sql)?;
     Ok(stmt.query_row(param_refs.as_slice(), row_to_aggregated)?)
@@ -139,10 +137,7 @@ pub struct DailyTotal {
 }
 
 /// Query daily totals for heatmap and chart rendering.
-pub fn query_daily_totals(
-    conn: &Connection,
-    filter: &QueryFilter,
-) -> Result<Vec<DailyTotal>> {
+pub fn query_daily_totals(conn: &Connection, filter: &QueryFilter) -> Result<Vec<DailyTotal>> {
     let (where_clause, params) = build_where_clause(filter);
 
     let sql = format!(
@@ -158,8 +153,7 @@ pub fn query_daily_totals(
          ORDER BY day ASC"
     );
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
@@ -283,20 +277,24 @@ fn generate_monthly_labels(first: &str, last: &str) -> Option<Vec<String>> {
 
 // -- WHERE clause builder --
 
-fn build_where_clause(
-    filter: &QueryFilter,
-) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
+fn build_where_clause(filter: &QueryFilter) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
     let mut clauses = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
     if let Some(ref begin) = filter.begin {
         params.push(Box::new(begin.to_string()));
-        clauses.push(format!("AND date(timestamp, 'localtime') >= ?{}", params.len()));
+        clauses.push(format!(
+            "AND date(timestamp, 'localtime') >= ?{}",
+            params.len()
+        ));
     }
 
     if let Some(ref end) = filter.end {
         params.push(Box::new(end.to_string()));
-        clauses.push(format!("AND date(timestamp, 'localtime') <= ?{}", params.len()));
+        clauses.push(format!(
+            "AND date(timestamp, 'localtime') <= ?{}",
+            params.len()
+        ));
     }
 
     if let Some(ref model) = filter.model {
@@ -339,7 +337,12 @@ mod tests {
     }
 
     fn make_record(
-        id: &str, ts: &str, family: &str, project: &str, input: u64, output: u64,
+        id: &str,
+        ts: &str,
+        family: &str,
+        project: &str,
+        input: u64,
+        output: u64,
     ) -> crate::domain::usage::TokenRecord {
         crate::domain::usage::TokenRecord {
             request_id: id.into(),
@@ -363,7 +366,10 @@ mod tests {
     fn test_query_daily() {
         let db = Database::open_in_memory().unwrap();
         seed_db(&db);
-        let filter = QueryFilter { include_subagents: true, ..Default::default() };
+        let filter = QueryFilter {
+            include_subagents: true,
+            ..Default::default()
+        };
         let rows = query_by_period(db.conn(), TimePeriod::Daily, &filter, 30).unwrap();
         assert!(rows.len() >= 2);
     }
@@ -372,7 +378,11 @@ mod tests {
     fn test_query_with_model_filter() {
         let db = Database::open_in_memory().unwrap();
         seed_db(&db);
-        let filter = QueryFilter { model: Some("opus".into()), include_subagents: true, ..Default::default() };
+        let filter = QueryFilter {
+            model: Some("opus".into()),
+            include_subagents: true,
+            ..Default::default()
+        };
         let rows = query_by_period(db.conn(), TimePeriod::Daily, &filter, 30).unwrap();
         let total_input: u64 = rows.iter().map(|r| r.input_tokens).sum();
         assert_eq!(total_input, 100 + 300 + 500);
@@ -382,7 +392,11 @@ mod tests {
     fn test_query_with_project_filter() {
         let db = Database::open_in_memory().unwrap();
         seed_db(&db);
-        let filter = QueryFilter { project: Some("proj-b".into()), include_subagents: true, ..Default::default() };
+        let filter = QueryFilter {
+            project: Some("proj-b".into()),
+            include_subagents: true,
+            ..Default::default()
+        };
         let rows = query_by_period(db.conn(), TimePeriod::Daily, &filter, 30).unwrap();
         let total_input: u64 = rows.iter().map(|r| r.input_tokens).sum();
         assert_eq!(total_input, 300);
@@ -392,13 +406,20 @@ mod tests {
     fn test_query_top() {
         let db = Database::open_in_memory().unwrap();
         seed_db(&db);
-        let filter = QueryFilter { include_subagents: true, ..Default::default() };
+        let filter = QueryFilter {
+            include_subagents: true,
+            ..Default::default()
+        };
         let rows = query_top(db.conn(), &filter, 10).unwrap();
         assert!(!rows.is_empty());
         // Verify descending order by total_tokens
         for w in rows.windows(2) {
-            assert!(w[0].total_tokens >= w[1].total_tokens,
-                "expected descending order: {} >= {}", w[0].total_tokens, w[1].total_tokens);
+            assert!(
+                w[0].total_tokens >= w[1].total_tokens,
+                "expected descending order: {} >= {}",
+                w[0].total_tokens,
+                w[1].total_tokens
+            );
         }
     }
 
@@ -406,7 +427,10 @@ mod tests {
     fn test_query_summary() {
         let db = Database::open_in_memory().unwrap();
         seed_db(&db);
-        let filter = QueryFilter { include_subagents: true, ..Default::default() };
+        let filter = QueryFilter {
+            include_subagents: true,
+            ..Default::default()
+        };
         let summary = query_summary(db.conn(), &filter).unwrap();
         assert_eq!(summary.request_count, 5);
         assert_eq!(summary.input_tokens, 100 + 200 + 300 + 50 + 500);
@@ -430,7 +454,10 @@ mod tests {
     #[test]
     fn test_query_empty_db() {
         let db = Database::open_in_memory().unwrap();
-        let filter = QueryFilter { include_subagents: true, ..Default::default() };
+        let filter = QueryFilter {
+            include_subagents: true,
+            ..Default::default()
+        };
         let rows = query_by_period(db.conn(), TimePeriod::Daily, &filter, 30).unwrap();
         assert!(rows.is_empty());
         let summary = query_summary(db.conn(), &filter).unwrap();
@@ -467,8 +494,18 @@ mod tests {
     #[test]
     fn test_gap_fill_inserts_zero_rows() {
         let rows = vec![
-            AggregatedRow { period: "2026-04-01".into(), request_count: 5, total_tokens: 100, ..Default::default() },
-            AggregatedRow { period: "2026-04-03".into(), request_count: 3, total_tokens: 200, ..Default::default() },
+            AggregatedRow {
+                period: "2026-04-01".into(),
+                request_count: 5,
+                total_tokens: 100,
+                ..Default::default()
+            },
+            AggregatedRow {
+                period: "2026-04-03".into(),
+                request_count: 3,
+                total_tokens: 200,
+                ..Default::default()
+            },
         ];
         let filled = fill_gaps(TimePeriod::Daily, rows);
         assert_eq!(filled.len(), 3);
@@ -480,7 +517,10 @@ mod tests {
     fn test_limit_applied_after_gap_fill() {
         let db = Database::open_in_memory().unwrap();
         seed_db(&db);
-        let filter = QueryFilter { include_subagents: true, ..Default::default() };
+        let filter = QueryFilter {
+            include_subagents: true,
+            ..Default::default()
+        };
         let rows = query_by_period(db.conn(), TimePeriod::Daily, &filter, 2).unwrap();
         assert_eq!(rows.len(), 2);
     }
@@ -489,7 +529,10 @@ mod tests {
     fn test_query_daily_totals() {
         let db = Database::open_in_memory().unwrap();
         seed_db(&db);
-        let filter = QueryFilter { include_subagents: true, ..Default::default() };
+        let filter = QueryFilter {
+            include_subagents: true,
+            ..Default::default()
+        };
         let totals = query_daily_totals(db.conn(), &filter).unwrap();
         assert!(totals.len() >= 2);
         assert!(totals.first().unwrap().date <= totals.last().unwrap().date);
