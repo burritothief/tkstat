@@ -64,7 +64,7 @@ fn main() -> Result<()> {
             if cli.heatmap {
                 render::heatmap::render_heatmap(&chart_data, &metric_label)
             } else {
-                render::braille::render_chart(&chart_data, &metric_label)
+                render::chart::render_chart(&chart_data, &metric_label)
             }
         }
         OutputMode::Summary => {

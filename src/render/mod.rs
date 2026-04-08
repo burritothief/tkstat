@@ -1,4 +1,4 @@
-pub mod braille;
+pub mod chart;
 pub mod columns;
 pub mod heatmap;
 pub mod json;

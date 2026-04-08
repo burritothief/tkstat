@@ -22,7 +22,6 @@ src/
   main.rs          - Binary entry point only: parse CLI, call lib
   cli.rs           - clap derive structs, OutputMode enum, ChartMetric enum
   config.rs        - Data dir / DB path resolution
-  error.rs         - thiserror error types
   domain/          - Core domain types, no IO
     usage.rs       - TokenRecord, AggregatedRow, ModelFamily, formatting
     pricing.rs     - Static per-model pricing lookup
@@ -38,7 +37,7 @@ src/
     table.rs       - vnstat-style ASCII table with configurable columns
     columns.rs     - Column enum with FromStr, parsing, default set
     heatmap.rs     - GitHub-style contribution calendar (Vega blues palette)
-    braille.rs     - Bar chart via textplots
+    chart.rs       - Line/bar chart via textplots
     summary.rs     - Short summary mode
     json.rs        - JSON output (uses Serialize derive on AggregatedRow)
     oneline.rs     - Single-line semicolon-delimited output
@@ -72,8 +71,7 @@ Claude Code logs live at `~/.claude/projects/*/UUID.jsonl`. Only `"type":"assist
 
 ### Error Handling
 
-- Use `anyhow::Result` in application/binary code (main.rs, CLI wiring).
-- Use `thiserror` for the `TkstatError` enum in `error.rs`.
+- Use `anyhow::Result` everywhere. The crate is a CLI, not a library consumed by others, so structured error types add no value. Use `anyhow::bail!` for early returns with context.
 - **Never swallow errors**: no `.filter_map(|r| r.ok())` on iterators of Results. Use `.collect::<Result<Vec<_>, _>>()?` to propagate.
 - **No `.expect()` or `.unwrap()` in non-test code** unless the invariant is trivially provable (e.g., `NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()`). Prefer returning `Option`/`Result` or using `match`-based static lookups.
 
@@ -101,10 +99,10 @@ Don't add dependencies without a strong reason. The binary is ~3MB stripped. Cur
 - `rusqlite` (bundled) — embedded SQLite, sync, zero async overhead
 - `chrono` — date/time parsing and local timezone conversion
 - `owo-colors` — zero-alloc terminal colors, respects NO_COLOR
-- `textplots` — terminal bar/line charts with braille rendering
+- `textplots` — terminal charts with braille rendering
 - `walkdir` — directory traversal
 - `memchr` — fast byte scanning for JSONL pre-filter
-- `anyhow` + `thiserror` — error handling
+- `anyhow` — error handling
 - `dirs` — XDG-compliant path resolution
 
 Do NOT add: `tokio`, `async-std`, `reqwest`, `config-rs`, `comfy-table`. If you need HTTP for pricing updates, add it behind a feature flag.
