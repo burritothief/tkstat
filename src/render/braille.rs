@@ -34,20 +34,19 @@ pub fn render_braille(daily_data: &[(String, f64)], metric_label: &str) -> Strin
 
     let mut canvas = Canvas::new(dot_w, dot_h);
 
-    // Map data points to dot coordinates and draw lines between them
+    // Draw vertical bars for each data point
     let n = values.len();
-    for i in 0..n {
-        let x0 = (i as f64 / (n - 1) as f64) * (dot_w - 1) as f64;
-        let y0 = (values[i] / y_max) * (dot_h - 1) as f64;
+    let slot_w = dot_w as f64 / n as f64;
+    let bar_w = (slot_w * 0.7).max(1.0) as u32;
 
-        if i > 0 {
-            let x_prev = ((i - 1) as f64 / (n - 1) as f64) * (dot_w - 1) as f64;
-            let y_prev = (values[i - 1] / y_max) * (dot_h - 1) as f64;
-            draw_line(&mut canvas, x_prev, y_prev, x0, y0);
+    for (i, &val) in values.iter().enumerate() {
+        let bar_h = ((val / y_max) * (dot_h - 1) as f64).round() as u32;
+        let x_start = (i as f64 * slot_w + (slot_w - bar_w as f64) / 2.0).round() as u32;
+        for x in x_start..x_start + bar_w {
+            for y in 0..=bar_h {
+                canvas.set(x, y);
+            }
         }
-
-        // Draw a dot at each data point
-        canvas.set(x0 as u32, y0 as u32);
     }
 
     // Render canvas to string — drawille uses bottom-left origin,
@@ -98,22 +97,6 @@ pub fn render_braille(daily_data: &[(String, f64)], metric_label: &str) -> Strin
     ));
 
     out
-}
-
-/// Draw a line between two points on the canvas using Bresenham-style interpolation.
-fn draw_line(canvas: &mut Canvas, x0: f64, y0: f64, x1: f64, y1: f64) {
-    let dx = (x1 - x0).abs();
-    let dy = (y1 - y0).abs();
-    let steps = dx.max(dy).ceil() as usize;
-    if steps == 0 {
-        return;
-    }
-    for s in 0..=steps {
-        let t = s as f64 / steps as f64;
-        let x = x0 + t * (x1 - x0);
-        let y = y0 + t * (y1 - y0);
-        canvas.set(x.round() as u32, y.round() as u32);
-    }
 }
 
 fn format_value(val: f64, metric: &str) -> String {
@@ -190,14 +173,5 @@ mod tests {
         let output = render_braille(&data, "tokens");
         // Should not panic or produce garbage
         assert!(output.contains("claude / chart"));
-    }
-
-    #[test]
-    fn test_draw_line_horizontal() {
-        let mut canvas = Canvas::new(20, 8);
-        draw_line(&mut canvas, 0.0, 4.0, 19.0, 4.0);
-        let frame = canvas.frame();
-        let has_dots = frame.chars().any(|c| (c as u32) >= 0x2801);
-        assert!(has_dots);
     }
 }
