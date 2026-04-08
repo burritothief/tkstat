@@ -2,8 +2,8 @@ use crate::domain::usage::AggregatedRow;
 use crate::render;
 use crate::render::columns::Column;
 
-const NUMERIC_COL_WIDTH: usize = 11;
-const PERIOD_COL_WIDTH: usize = 16;
+const PERIOD_WIDTH: usize = 10;
+const COL_WIDTH: usize = 8;
 
 /// Render a vnstat-style ASCII table from aggregated rows.
 pub fn render_table(
@@ -21,19 +21,22 @@ pub fn render_table(
     }
 
     let total = AggregatedRow::sum(rows);
+    let col_widths = compute_col_widths(columns, rows, &total);
+    let period_width = PERIOD_WIDTH;
+
     let mut out = render::header(period_name, filter_desc);
 
     // Header row
-    out.push_str(&format!(" {:>PERIOD_COL_WIDTH$}", ""));
-    for (i, col) in columns.iter().enumerate() {
+    out.push_str(&format!(" {:period_width$}", ""));
+    for (i, (col, &w)) in columns.iter().zip(&col_widths).enumerate() {
         if i > 0 {
             out.push_str(" |");
         }
-        out.push_str(&format!("  {:>NUMERIC_COL_WIDTH$}", col.header()));
+        out.push_str(&format!("  {:>w$}", col.header()));
     }
     out.push('\n');
 
-    let sep = build_separator(columns);
+    let sep = build_separator(period_width, &col_widths);
     out.push_str(&sep);
 
     // Data rows — group by date prefix for sub-daily periods
@@ -45,48 +48,86 @@ pub fn render_table(
                 last_date_group = Some(date);
                 out.push_str(&format!(" {date}\n"));
             }
-            // Indent time labels to half the period column width
-            let indent = PERIOD_COL_WIDTH / 2;
-            out.push_str(&format_row_width(time, row, columns, indent));
+            out.push_str(&format_data_row(
+                time,
+                row,
+                columns,
+                &col_widths,
+                period_width,
+            ));
         } else {
-            out.push_str(&format_row(row.period.as_str(), row, columns));
+            out.push_str(&format_data_row(
+                &row.period,
+                row,
+                columns,
+                &col_widths,
+                period_width,
+            ));
         }
     }
 
     out.push_str(&sep);
-    out.push_str(&format_row("total", &total, columns));
+    out.push_str(&format_data_row(
+        "total",
+        &total,
+        columns,
+        &col_widths,
+        period_width,
+    ));
     out
 }
 
-fn build_separator(columns: &[Column]) -> String {
-    let mut s = format!(" {:-<PERIOD_COL_WIDTH$}", "");
-    for i in 0..columns.len() {
+fn compute_col_widths(
+    columns: &[Column],
+    rows: &[AggregatedRow],
+    total: &AggregatedRow,
+) -> Vec<usize> {
+    columns
+        .iter()
+        .map(|col| {
+            let header_w = col.header().len();
+            let data_w = rows
+                .iter()
+                .map(|r| {
+                    if r.request_count == 0 {
+                        1
+                    } else {
+                        col.format_value(r).len()
+                    }
+                })
+                .max()
+                .unwrap_or(0);
+            let total_w = col.format_value(total).len();
+            COL_WIDTH.max(header_w).max(data_w).max(total_w)
+        })
+        .collect()
+}
+
+fn build_separator(period_width: usize, col_widths: &[usize]) -> String {
+    let mut s = format!(" {:-<period_width$}", "");
+    for (i, &w) in col_widths.iter().enumerate() {
         if i > 0 {
-            s.push_str("-+--");
-        } else {
-            s.push_str("--");
+            s.push_str("-+");
         }
-        s.push_str(&format!("{:-<NUMERIC_COL_WIDTH$}", ""));
+        s.push_str("--");
+        for _ in 0..w {
+            s.push('-');
+        }
     }
     s.push('\n');
     s
 }
 
-fn format_row(label: &str, row: &AggregatedRow, columns: &[Column]) -> String {
-    format_row_width(label, row, columns, PERIOD_COL_WIDTH)
-}
-
-fn format_row_width(
+fn format_data_row(
     label: &str,
     row: &AggregatedRow,
     columns: &[Column],
-    label_width: usize,
+    col_widths: &[usize],
+    period_width: usize,
 ) -> String {
     let is_empty = row.request_count == 0;
-    // Pad to align with the full PERIOD_COL_WIDTH
-    let padding = PERIOD_COL_WIDTH - label_width;
-    let mut s = format!(" {:>label_width$}{:padding$}", label, "");
-    for (i, col) in columns.iter().enumerate() {
+    let mut s = format!(" {:>period_width$}", label);
+    for (i, (col, &w)) in columns.iter().zip(col_widths).enumerate() {
         if i > 0 {
             s.push_str(" |");
         }
@@ -95,7 +136,7 @@ fn format_row_width(
         } else {
             col.format_value(row)
         };
-        s.push_str(&format!("  {:>NUMERIC_COL_WIDTH$}", val));
+        s.push_str(&format!("  {:>w$}", val));
     }
     s.push('\n');
     s
@@ -213,5 +254,80 @@ mod tests {
         );
         assert_eq!(split_period_label("2026-04-07"), None);
         assert_eq!(split_period_label("2026-04"), None);
+    }
+
+    #[test]
+    fn test_all_lines_same_width() {
+        let output = render_table("daily", &sample_rows(), &default_columns(), None);
+        let data_lines: Vec<&str> = output
+            .lines()
+            .filter(|l| l.contains('|') || l.contains('+'))
+            .collect();
+        assert!(!data_lines.is_empty());
+        let expected = data_lines[0].len();
+        for line in &data_lines {
+            assert_eq!(
+                line.len(),
+                expected,
+                "misaligned: {:?} (got {}, expected {})",
+                line,
+                line.len(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_hourly_total_aligns_with_time_labels() {
+        let rows = vec![
+            AggregatedRow {
+                period: "2026-04-05 10:00".into(),
+                input_tokens: 100,
+                request_count: 1,
+                ..Default::default()
+            },
+            AggregatedRow {
+                period: "2026-04-05 11:00".into(),
+                input_tokens: 200,
+                request_count: 2,
+                ..Default::default()
+            },
+        ];
+        let cols = vec![Column::Input, Column::Cost];
+        let output = render_table("hourly", &rows, &cols, None);
+        let time_line = output.lines().find(|l| l.contains("10:00")).unwrap();
+        // Last line with "total" is the totals row (not the column header)
+        let total_line = output.lines().rev().find(|l| l.contains("total")).unwrap();
+        // Both should have the same length (aligned columns)
+        assert_eq!(time_line.len(), total_line.len());
+        // "total" right edge should align with "10:00" right edge
+        let time_pos = time_line.find("10:00").unwrap() + "10:00".len();
+        let total_pos = total_line.find("total").unwrap() + "total".len();
+        assert_eq!(
+            time_pos, total_pos,
+            "total label not aligned with time labels"
+        );
+    }
+
+    #[test]
+    fn test_columns_no_wider_than_needed() {
+        let rows = vec![AggregatedRow {
+            period: "2026-04".into(),
+            input_tokens: 50,
+            cost_usd: 0.01,
+            request_count: 1,
+            ..Default::default()
+        }];
+        let cols = vec![Column::Input, Column::Cost];
+        let output = render_table("monthly", &rows, &cols, None);
+        // With dynamic widths, the separator should be compact.
+        // Period col = 7 ("2026-04"), input col = 5 ("input"), cost col = 5 ("$0.01").
+        // Separator: " -------" + "--" + "-----" + "-+--" + "-----" = 26 chars
+        let sep_line = output.lines().find(|l| l.contains("--")).unwrap();
+        assert!(
+            sep_line.len() < 40,
+            "table is wider than needed: {} chars",
+            sep_line.len()
+        );
     }
 }
