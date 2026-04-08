@@ -93,12 +93,12 @@ mod tests {
         vec![
             AggregatedRow {
                 period: "2026-04-05".into(), input_tokens: 1200, output_tokens: 856,
-                cache_write_tokens: 4100, cache_read_tokens: 52300, total_tokens: 58456,
+                cache_creation_tokens: 4100, cache_read_tokens: 52300, total_tokens: 58456,
                 cost_usd: 0.84, request_count: 5, session_count: 2,
             },
             AggregatedRow {
                 period: "2026-04-06".into(), input_tokens: 3400, output_tokens: 1200,
-                cache_write_tokens: 12300, cache_read_tokens: 128700, total_tokens: 145600,
+                cache_creation_tokens: 12300, cache_read_tokens: 128700, total_tokens: 145600,
                 cost_usd: 2.11, request_count: 12, session_count: 3,
             },
         ]
@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn test_render_table_has_columns() {
         let output = render_table("daily", &sample_rows(), &default_columns(), None);
-        for name in ["input", "output", "cache rd", "cache wr", "total", "cost"] {
+        for name in ["input", "output", "cache rd", "cache cr", "total", "cost"] {
             assert!(output.contains(name), "missing column: {name}");
         }
     }

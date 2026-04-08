@@ -38,9 +38,8 @@ tkstat --chart      # braille time-series chart
 ```
 $ tkstat -d --limit 10
  claude / daily
-                         input |       output |     cache rd |     cache wr |        total |         cost
+                         input |       output |     cache rd |     cache cr |        total |         cost
  ------------------------------+--------------+--------------+--------------+--------------+-------------
-       2026-03-29            - |            - |            - |            - |            - |            -
        2026-03-30        1.2 K |       80.2 K |       36.8 M |        1.6 M |       38.4 M |        $84.5
        2026-03-31        4.2 K |        151 K |       66.3 M |        4.3 M |       70.7 M |         $185
        2026-04-01       23.3 K |        207 K |       29.4 M |        2.4 M |       32.0 M |        $87.2
@@ -49,9 +48,10 @@ $ tkstat -d --limit 10
        2026-04-04            - |            - |            - |            - |            - |            -
        2026-04-05            - |            - |            - |            - |            - |            -
        2026-04-06        1.6 K |        182 K |       36.4 M |        3.1 M |       39.6 M |         $117
-       2026-04-07       14.0 K |        435 K |        100 M |        4.2 M |        104 M |         $241
+       2026-04-07       14.8 K |        612 K |        150 M |        7.4 M |        158 M |         $389
+       2026-04-08           19 |        3.1 K |        3.9 M |        760 K |        4.7 M |        $20.4
  ------------------------------+--------------+--------------+--------------+--------------+-------------
-            total       49.7 K |        1.1 M |        276 M |       16.5 M |        293 M |         $747
+            total       50.6 K |        1.3 M |        330 M |       20.4 M |        352 M |         $915
 ```
 
 Days with no activity show `-`. The time series is always continuous — no gaps.
@@ -63,11 +63,9 @@ Sub-daily views group by date to avoid repeating it on every line:
 ```
 $ tkstat -h --limit 12
  claude / hourly
-                         input |       output |     cache rd |     cache wr |        total |         cost
+                         input |       output |     cache rd |     cache cr |        total |         cost
  ------------------------------+--------------+--------------+--------------+--------------+-------------
  2026-04-07
-            11:00            - |            - |            - |            - |            - |            -
-            12:00          111 |       30.1 K |        6.1 M |        140 K |        6.3 M |        $14.1
             13:00            - |            - |            - |            - |            - |            -
             14:00        8.8 K |       62.1 K |       25.3 M |        568 K |       25.9 M |        $47.5
             15:00          546 |       17.0 K |        3.1 M |        163 K |        3.2 M |        $4.87
@@ -76,10 +74,13 @@ $ tkstat -h --limit 12
             18:00          365 |        8.8 K |        3.6 M |        287 K |        3.9 M |        $11.5
             19:00            - |            - |            - |            - |            - |            -
             20:00        3.0 K |       17.8 K |        3.6 M |        462 K |        4.1 M |        $13.9
-            21:00          194 |        140 K |        6.9 M |        979 K |        8.0 M |        $38.7
-            22:00          182 |       78.6 K |       19.2 M |        683 K |       20.0 M |        $47.5
+            21:00          194 |        141 K |        6.9 M |        979 K |        8.0 M |        $38.7
+            22:00          656 |        145 K |       29.7 M |        1.1 M |       31.0 M |        $76.9
+            23:00          388 |        109 K |       40.1 M |        2.7 M |       42.9 M |         $119
+ 2026-04-08
+            00:00           19 |        3.1 K |        3.9 M |        760 K |        4.7 M |        $20.4
  ------------------------------+--------------+--------------+--------------+--------------+-------------
-            total       13.9 K |        431 K |       99.7 M |        4.0 M |        104 M |         $238
+            total       14.7 K |        581 K |        148 M |        7.8 M |        156 M |         $393
 ```
 
 ### Top days
@@ -87,51 +88,32 @@ $ tkstat -h --limit 12
 ```
 $ tkstat -t 5
  claude / top days
-                         input |       output |     cache rd |     cache wr |        total |         cost
+                         input |       output |     cache rd |     cache cr |        total |         cost
  ------------------------------+--------------+--------------+--------------+--------------+-------------
-       2026-04-07       14.0 K |        435 K |        100 M |        4.2 M |        104 M |         $241
+       2026-04-07       14.8 K |        612 K |        150 M |        7.4 M |        158 M |         $389
        2026-03-20        5.4 K |        250 K |       90.7 M |        5.5 M |       96.5 M |         $245
        2026-03-31        4.2 K |        151 K |       66.3 M |        4.3 M |       70.7 M |         $185
        2026-03-18       14.0 K |        184 K |       50.5 M |        3.1 M |       53.8 M |         $131
        2026-03-17       12.0 K |        138 K |       39.1 M |        3.2 M |       42.5 M |         $117
  ------------------------------+--------------+--------------+--------------+--------------+-------------
-            total       49.6 K |        1.2 M |        346 M |       20.4 M |        368 M |         $919
+            total       50.5 K |        1.3 M |        397 M |       23.5 M |        422 M |        $1067
 ```
 
 ### Heatmap
 
 ```
 $ tkstat --heatmap
- claude / heatmap (tokens)
-
-         JanFeb         Mar            Apr
-   Mon   .  .  .  ▓  ▒  ▒  ▓  ▓  █  █  █
-   Tue   ░  .  .  ▒  ▒  ░  ░  █  ▓  █  █
-   Wed   .  ░  ░  ▓  ▓  ▓  ░  █  █  █  .
-   Thu   ░  .  ░  ▒  ▒  ▒  ▒  █  .  ▓  .
-   Fri   .  .  ▒  ▓  ░  ▓  ▒  █  █  ▒  .
-   Sat   ▒  .  .  .  ░  ░  ░  ▓  .  .  .
-   Sun   .  .  ░  .  .  .  ▓  .  .  .  .
-
-         Less  .  ░  ▒  ▓  █  More
 ```
+
+Renders a year-long GitHub-style contribution calendar using the Vega/D3 blues color palette with continuous color interpolation and log-scale normalization.
 
 ### Braille chart
 
 ```
 $ tkstat --chart
- claude / chart (tokens)
-
-      104 M ⠋⠑⠢⠚⠉⠉⠑⠤⠜⡆ ⡦⣀⡴⠤⡠⠓⠲⡀⢨⠒⠋⠙⠤⠜⢢⢀⣢ ⡸⡇ ⡏⠉⠢⠴⠔⠓⡄                ⠠⡤⡄
-                     ⠸⡸       ⢣⠏      ⠋⠈⢣⠃⢱⢸      ⠸⡀     ⠈⣇ ⡿⡀     ⢸ ⢣
-                     ⠈⠁                   ⠘⠇       ⢱     ⢰⠹⣰⠁⢇     ⡎ ⢸
-                                                    ⡇    ⢸ ⠃ ⠘⠚⡇   ⡇ ⠸⡀
-            ...
-
-   avg: 15.2 M   max: 104 M   total: 745 M
 ```
 
-Use `--chart-metric cost` to chart by estimated cost instead of tokens.
+Renders a braille-dot time series of daily token usage. Use `--chart-metric cost` to chart by estimated cost instead of tokens.
 
 ## Filters
 
@@ -145,7 +127,7 @@ tkstat --no-subagents       # exclude subagent usage
 
 ## Column selection
 
-Default columns: `input`, `output`, `cache_rd`, `cache_wr`, `total`, `cost`.
+Default columns: `input`, `output`, `cache_rd`, `cache_cr`, `total`, `cost`.
 
 Use `--columns` to pick exactly which columns to show:
 
@@ -154,7 +136,7 @@ tkstat --columns cost,reqs,sessions
 tkstat --columns in,out,total,cost,reqs
 ```
 
-Available columns: `input` (`in`), `output` (`out`), `cache_rd` (`crd`), `cache_wr` (`cwr`), `total` (`tot`), `cost`, `reqs` (`req`), `sessions` (`sess`).
+Available columns: `input` (`in`), `output` (`out`), `cache_rd` (`crd`), `cache_cr` (`ccr`), `total` (`tot`), `cost`, `reqs` (`req`), `sessions` (`sess`).
 
 ## Output formats
 
@@ -173,7 +155,7 @@ These map directly to fields in the [Anthropic Messages API usage object](https:
 | `input` | `input_tokens` | Tokens sent to Claude — prompts, system messages, tool results. Small in Claude Code because most input is cached. |
 | `output` | `output_tokens` | Tokens Claude generates — responses, code, tool calls, chain-of-thought. |
 | `cache rd` | `cache_read_input_tokens` | Input tokens served from Anthropic's [prompt cache](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching). 90% cheaper than regular input. This is the bulk of Claude Code token volume — the full conversation is resent each turn, but unchanged portions hit cache. |
-| `cache wr` | `cache_creation_input_tokens` | Input tokens written to cache for the first time. 25% more expensive than regular input. |
+| `cache cr` | `cache_creation_input_tokens` | Input tokens written to cache for the first time. 25% more expensive than regular input. |
 | `total` | — | Sum of all four token types. |
 | `cost` | — | Estimated cost in USD, calculated from token counts and [Anthropic's published pricing](https://docs.anthropic.com/en/docs/about-claude/models). |
 | `reqs` | — | Number of API requests. |

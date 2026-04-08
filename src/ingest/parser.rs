@@ -107,7 +107,7 @@ pub fn parse_jsonl_bytes(bytes: &[u8], file_info: &SourceFile) -> Vec<TokenRecor
             model_raw: model_str,
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
-            cache_write_tokens: usage.cache_creation_input_tokens,
+            cache_creation_tokens: usage.cache_creation_input_tokens,
             cache_read_tokens: usage.cache_read_input_tokens,
             cost_usd: 0.0,
             project: file_info.project_name.clone(),
@@ -159,7 +159,7 @@ mod tests {
         assert_eq!(r.model, ModelFamily::Opus);
         assert_eq!(r.input_tokens, 10);
         assert_eq!(r.output_tokens, 42);
-        assert_eq!(r.cache_write_tokens, 100);
+        assert_eq!(r.cache_creation_tokens, 100);
         assert_eq!(r.cache_read_tokens, 500);
     }
 

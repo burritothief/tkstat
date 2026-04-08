@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -45,10 +45,10 @@ fn create_tables(conn: &Connection) -> Result<()> {
             model_raw           TEXT NOT NULL,
             input_tokens        INTEGER NOT NULL,
             output_tokens       INTEGER NOT NULL,
-            cache_write_tokens  INTEGER NOT NULL,
+            cache_creation_tokens  INTEGER NOT NULL,
             cache_read_tokens   INTEGER NOT NULL,
             total_tokens        INTEGER GENERATED ALWAYS AS
-                (input_tokens + output_tokens + cache_write_tokens + cache_read_tokens) STORED,
+                (input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) STORED,
             cost_usd            REAL NOT NULL,
             project             TEXT NOT NULL,
             source_file         TEXT NOT NULL,
@@ -107,7 +107,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
         conn.execute(
-            "INSERT INTO token_usage (request_id, session_id, uuid, timestamp, model_family, model_raw, input_tokens, output_tokens, cache_write_tokens, cache_read_tokens, cost_usd, project, source_file, is_subagent)
+            "INSERT INTO token_usage (request_id, session_id, uuid, timestamp, model_family, model_raw, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cost_usd, project, source_file, is_subagent)
              VALUES ('r1', 's1', 'u1', '2026-04-07T10:00:00Z', 'opus', 'claude-opus-4-6', 100, 200, 300, 400, 1.5, 'test', '/test.jsonl', 0)",
             [],
         ).unwrap();

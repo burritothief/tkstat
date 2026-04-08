@@ -113,7 +113,7 @@ pub struct Cli {
     #[arg(long = "oneline")]
     pub oneline: bool,
 
-    /// Columns to display (comma-separated: input,output,cache_rd,cache_wr,total,cost,reqs,sessions)
+    /// Columns to display (comma-separated: input,output,cache_rd,cache_cr,total,cost,reqs,sessions)
     #[arg(long = "columns", value_name = "COLS")]
     pub columns: Option<String>,
 

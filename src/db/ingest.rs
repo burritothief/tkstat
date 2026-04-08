@@ -17,7 +17,7 @@ pub fn batch_insert(conn: &Connection, records: &[TokenRecord]) -> Result<usize>
         let mut stmt = tx.prepare_cached(
             "INSERT OR IGNORE INTO token_usage
                 (request_id, session_id, uuid, timestamp, model_family, model_raw,
-                 input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
+                 input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
                  cost_usd, project, source_file, is_subagent)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         )?;
@@ -32,7 +32,7 @@ pub fn batch_insert(conn: &Connection, records: &[TokenRecord]) -> Result<usize>
                 r.model_raw,
                 r.input_tokens,
                 r.output_tokens,
-                r.cache_write_tokens,
+                r.cache_creation_tokens,
                 r.cache_read_tokens,
                 r.cost_usd,
                 r.project,
@@ -64,7 +64,7 @@ mod tests {
             model_raw: "claude-opus-4-6".into(),
             input_tokens: 10,
             output_tokens,
-            cache_write_tokens: 100,
+            cache_creation_tokens: 100,
             cache_read_tokens: 500,
             cost_usd: 0.05,
             project: "test".into(),
