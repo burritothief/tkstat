@@ -38,7 +38,7 @@ src/
     table.rs       - vnstat-style ASCII table with configurable columns
     columns.rs     - Column enum with FromStr, parsing, default set
     heatmap.rs     - GitHub-style contribution calendar (Vega blues palette)
-    braille.rs     - Braille-dot time series chart via drawille
+    braille.rs     - Bar chart via textplots
     summary.rs     - Short summary mode
     json.rs        - JSON output (uses Serialize derive on AggregatedRow)
     oneline.rs     - Single-line semicolon-delimited output
@@ -101,13 +101,13 @@ Don't add dependencies without a strong reason. The binary is ~3MB stripped. Cur
 - `rusqlite` (bundled) — embedded SQLite, sync, zero async overhead
 - `chrono` — date/time parsing and local timezone conversion
 - `owo-colors` — zero-alloc terminal colors, respects NO_COLOR
-- `drawille` — braille canvas for chart rendering
+- `textplots` — terminal bar/line charts with braille rendering
 - `walkdir` — directory traversal
 - `memchr` — fast byte scanning for JSONL pre-filter
 - `anyhow` + `thiserror` — error handling
 - `dirs` — XDG-compliant path resolution
 
-Do NOT add: `tokio`, `async-std`, `reqwest`, `config-rs`, `comfy-table`, `textplots`. If you need HTTP for pricing updates, add it behind a feature flag.
+Do NOT add: `tokio`, `async-std`, `reqwest`, `config-rs`, `comfy-table`. If you need HTTP for pricing updates, add it behind a feature flag.
 
 ## Testing
 
