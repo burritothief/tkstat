@@ -6,7 +6,7 @@ pub struct ModelPricing {
     pub input_per_1m: f64,
     pub output_per_1m: f64,
     pub cache_read_per_1m: f64,
-    pub cache_write_per_1m: f64,
+    pub cache_creation_per_1m: f64,
 }
 
 impl ModelPricing {
@@ -15,12 +15,12 @@ impl ModelPricing {
         input: u64,
         output: u64,
         cache_read: u64,
-        cache_write: u64,
+        cache_creation: u64,
     ) -> f64 {
         (input as f64 * self.input_per_1m
             + output as f64 * self.output_per_1m
             + cache_read as f64 * self.cache_read_per_1m
-            + cache_write as f64 * self.cache_write_per_1m)
+            + cache_creation as f64 * self.cache_creation_per_1m)
             / 1_000_000.0
     }
 }
@@ -29,21 +29,21 @@ static OPUS_PRICING: ModelPricing = ModelPricing {
     input_per_1m: 15.0,
     output_per_1m: 75.0,
     cache_read_per_1m: 1.50,
-    cache_write_per_1m: 18.75,
+    cache_creation_per_1m: 18.75,
 };
 
 static SONNET_PRICING: ModelPricing = ModelPricing {
     input_per_1m: 3.0,
     output_per_1m: 15.0,
     cache_read_per_1m: 0.30,
-    cache_write_per_1m: 3.75,
+    cache_creation_per_1m: 3.75,
 };
 
 static HAIKU_PRICING: ModelPricing = ModelPricing {
     input_per_1m: 0.80,
     output_per_1m: 4.0,
     cache_read_per_1m: 0.08,
-    cache_write_per_1m: 1.0,
+    cache_creation_per_1m: 1.0,
 };
 
 /// Look up pricing for a model family. Unknown models fall back to Sonnet rates.

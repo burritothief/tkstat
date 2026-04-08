@@ -65,7 +65,7 @@ pub struct TokenRecord {
     pub model_raw: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    pub cache_write_tokens: u64,
+    pub cache_creation_tokens: u64,
     pub cache_read_tokens: u64,
     pub cost_usd: f64,
     pub project: String,
@@ -79,7 +79,7 @@ pub struct AggregatedRow {
     pub period: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    pub cache_write_tokens: u64,
+    pub cache_creation_tokens: u64,
     pub cache_read_tokens: u64,
     pub total_tokens: u64,
     pub cost_usd: f64,
@@ -97,7 +97,7 @@ impl AggregatedRow {
         for r in rows {
             total.input_tokens += r.input_tokens;
             total.output_tokens += r.output_tokens;
-            total.cache_write_tokens += r.cache_write_tokens;
+            total.cache_creation_tokens += r.cache_creation_tokens;
             total.cache_read_tokens += r.cache_read_tokens;
             total.total_tokens += r.total_tokens;
             total.cost_usd += r.cost_usd;

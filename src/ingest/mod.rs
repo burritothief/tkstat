@@ -40,7 +40,7 @@ pub fn sync(db: &Database, data_dir: &std::path::Path, force: bool) -> Result<us
                     r.input_tokens,
                     r.output_tokens,
                     r.cache_read_tokens,
-                    r.cache_write_tokens,
+                    r.cache_creation_tokens,
                 );
                 r
             })
