@@ -80,7 +80,7 @@ pub struct Cli {
         long = "chart-metric",
         value_name = "METRIC",
         value_enum,
-        default_value = "tokens"
+        default_value = "cost"
     )]
     pub chart_metric: ChartMetric,
 
