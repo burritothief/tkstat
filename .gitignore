@@ -1,4 +1,14 @@
+# Build
 /target
+debug/
+*.d
+*.o
+*.so
+*.dylib
+
+# Rust
+**/*.rs.bk
+*.pdb
 
 # Editor
 *.swp
@@ -7,10 +17,26 @@
 .vscode/
 .idea/
 *.iml
+\#*\#
+.#*
 
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
+._*
 
-# Rust
-**/*.rs.bk
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Profiling / coverage
+perf.data
+perf.data.old
+*.profraw
+*.profdata
+lcov.info
+tarpaulin-report.html
+coverage/
