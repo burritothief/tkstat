@@ -1,0 +1,27 @@
+[package]
+name = "tkstat"
+version = "0.1.0"
+edition = "2024"
+description = "vnstat-style monitor for Claude Code token usage"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+comfy-table = "7"
+dirs = "6"
+memchr = "2"
+owo-colors = "4"
+rusqlite = { version = "0.34", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+drawille = "0.3"
+thiserror = "2"
+toml = "0.8"
+walkdir = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
