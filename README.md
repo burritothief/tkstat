@@ -1,10 +1,8 @@
 # tkstat
 
-A terminal-based token usage monitor for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), inspired by [vnstat](https://github.com/vergoh/vnstat).
+A terminal-based token usage monitor for Claude Code, inspired by [vnstat](https://github.com/vergoh/vnstat).
 
-Claude Code writes session logs as JSONL files, but there's no built-in way to see how many tokens you're burning across days, weeks, or months. [ccusage](https://github.com/ryoppippi/ccusage) solves this but re-parses all logs on every run, which gets slow. vnstat is instant because it maintains its own database.
-
-tkstat takes the same approach: parse the JSONL logs into a local SQLite database, then query it. Cold start ingests ~8K records in under 50ms. Warm starts are ~30ms.
+Claude Code writes session logs as JSONL files, but there's no built-in way to see how many tokens you're burning across days, weeks, or months. `tkstat` parses JSONL logs into a local SQLite database, then queries it.
 
 ## Install
 
@@ -33,8 +31,7 @@ tkstat --heatmap    # GitHub-style contribution calendar
 tkstat --chart      # braille time-series chart
 ```
 
-### Daily
-
+Daily:
 ```
 $ tkstat -d --limit 10
  claude / daily
@@ -54,12 +51,8 @@ $ tkstat -d --limit 10
             total       50.6 K |        1.3 M |        330 M |       20.4 M |        352 M |         $915
 ```
 
-Days with no activity show `-`. The time series is always continuous — no gaps.
 
-### Hourly
-
-Sub-daily views group by date to avoid repeating it on every line:
-
+Hourly:
 ```
 $ tkstat -h --limit 12
  claude / hourly
@@ -83,7 +76,7 @@ $ tkstat -h --limit 12
             total       14.7 K |        581 K |        148 M |        7.8 M |        156 M |         $393
 ```
 
-### Top days
+Top Days:
 
 ```
 $ tkstat -t 5
@@ -99,23 +92,7 @@ $ tkstat -t 5
             total       50.5 K |        1.3 M |        397 M |       23.5 M |        422 M |        $1067
 ```
 
-### Heatmap
-
-```
-$ tkstat --heatmap
-```
-
-Renders a year-long GitHub-style contribution calendar using the Vega/D3 blues color palette with continuous color interpolation and log-scale normalization.
-
-### Braille chart
-
-```
-$ tkstat --chart
-```
-
-Renders a braille-dot time series of daily token usage. Use `--chart-metric cost` to chart by estimated cost instead of tokens.
-
-## Filters
+### Filters
 
 ```
 tkstat --model opus         # only opus usage
@@ -125,7 +102,7 @@ tkstat -b 2026-03-01 -e 2026-03-31   # date range
 tkstat --no-subagents       # exclude subagent usage
 ```
 
-## Column selection
+### Column selection
 
 Default columns: `input`, `output`, `cache_rd`, `cache_cr`, `total`, `cost`.
 
@@ -137,16 +114,6 @@ tkstat --columns in,out,total,cost,reqs
 ```
 
 Available columns: `input` (`in`), `output` (`out`), `cache_rd` (`crd`), `cache_cr` (`ccr`), `total` (`tot`), `cost`, `reqs` (`req`), `sessions` (`sess`).
-
-## Output formats
-
-```
-tkstat --json -d        # JSON array
-tkstat --oneline        # semicolon-delimited single line
-tkstat -s               # short summary
-```
-
-## Columns explained
 
 These map directly to fields in the [Anthropic Messages API usage object](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#tracking-cache-performance):
 
@@ -161,14 +128,20 @@ These map directly to fields in the [Anthropic Messages API usage object](https:
 | `reqs` | — | Number of API requests. |
 | `sessions` | — | Number of distinct Claude Code sessions. |
 
+
+### Output formats
+
+```
+tkstat --json -d        # JSON array
+tkstat --oneline        # semicolon-delimited single line
+tkstat -s               # short summary
+```
+
 ## How it works
 
 Claude Code stores session logs at `~/.claude/projects/*/UUID.jsonl`. Each API response is a JSON line with a `usage` object containing token counts.
 
-tkstat maintains a SQLite database (at `~/.local/share/tkstat/tkstat.db`) that caches parsed token records. On each run it checks which JSONL files have changed since the last read (by file size and mtime) and only parses the new bytes. This is why it's fast:
-
-- **Cold start** (first run, full ingest): ~50ms for ~8K records
-- **Warm start** (no new data): ~30ms
+`tkstat` maintains a SQLite database (at `~/.local/share/tkstat/tkstat.db`) that caches parsed token records. On each run it checks which JSONL files have changed since the last read (by file size and mtime) and only parses the new bytes.
 
 Use `--force-update` to wipe the database and re-ingest everything (e.g., after changing pricing config).
 
@@ -181,7 +154,3 @@ tkstat --force-update           # full re-ingest
 ```
 
 The default database location is `~/.local/share/tkstat/tkstat.db`. You can also set the `TKSTAT_DB` environment variable.
-
-## License
-
-MIT
