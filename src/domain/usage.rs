@@ -141,8 +141,14 @@ mod tests {
     #[test]
     fn test_model_family_classify() {
         assert_eq!(ModelFamily::classify("claude-opus-4-6"), ModelFamily::Opus);
-        assert_eq!(ModelFamily::classify("claude-sonnet-4-5-20250929"), ModelFamily::Sonnet);
-        assert_eq!(ModelFamily::classify("claude-haiku-4-5-20251001"), ModelFamily::Haiku);
+        assert_eq!(
+            ModelFamily::classify("claude-sonnet-4-5-20250929"),
+            ModelFamily::Sonnet
+        );
+        assert_eq!(
+            ModelFamily::classify("claude-haiku-4-5-20251001"),
+            ModelFamily::Haiku
+        );
         assert_eq!(ModelFamily::classify("sonnet"), ModelFamily::Sonnet);
         assert_eq!(ModelFamily::classify("gpt-4"), ModelFamily::Unknown);
     }
@@ -150,15 +156,30 @@ mod tests {
     #[test]
     fn test_model_family_from_str_trait() {
         assert_eq!("opus".parse::<ModelFamily>().unwrap(), ModelFamily::Opus);
-        assert_eq!("Sonnet".parse::<ModelFamily>().unwrap(), ModelFamily::Sonnet);
+        assert_eq!(
+            "Sonnet".parse::<ModelFamily>().unwrap(),
+            ModelFamily::Sonnet
+        );
         assert!("gpt-4".parse::<ModelFamily>().is_err());
     }
 
     #[test]
     fn test_aggregated_row_sum() {
         let rows = vec![
-            AggregatedRow { input_tokens: 100, output_tokens: 50, cost_usd: 1.0, request_count: 2, ..Default::default() },
-            AggregatedRow { input_tokens: 200, output_tokens: 80, cost_usd: 2.0, request_count: 3, ..Default::default() },
+            AggregatedRow {
+                input_tokens: 100,
+                output_tokens: 50,
+                cost_usd: 1.0,
+                request_count: 2,
+                ..Default::default()
+            },
+            AggregatedRow {
+                input_tokens: 200,
+                output_tokens: 80,
+                cost_usd: 2.0,
+                request_count: 3,
+                ..Default::default()
+            },
         ];
         let total = AggregatedRow::sum(&rows);
         assert_eq!(total.input_tokens, 300);

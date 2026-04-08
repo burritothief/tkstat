@@ -93,7 +93,8 @@ impl Database {
     }
 
     pub fn reset(&self) -> Result<()> {
-        self.conn.execute_batch("DELETE FROM token_usage; DELETE FROM file_state;")?;
+        self.conn
+            .execute_batch("DELETE FROM token_usage; DELETE FROM file_state;")?;
         Ok(())
     }
 }
@@ -106,7 +107,8 @@ mod tests {
     #[test]
     fn test_open_in_memory() {
         let db = Database::open_in_memory().unwrap();
-        let count: i64 = db.conn()
+        let count: i64 = db
+            .conn()
             .query_row("SELECT COUNT(*) FROM token_usage", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);

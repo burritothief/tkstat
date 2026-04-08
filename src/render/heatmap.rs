@@ -120,7 +120,11 @@ pub fn render_heatmap(daily_data: &[(String, f64)], metric_label: &str) -> Strin
             if val <= 0.0 {
                 out.push_str(EMPTY);
             } else {
-                let t = if val >= max_val { 1.0 } else { val.ln() / log_max };
+                let t = if val >= max_val {
+                    1.0
+                } else {
+                    val.ln() / log_max
+                };
                 let (r, g, b) = interpolate_color(t.max(0.0));
                 out.push_str(&colored_block(r, g, b));
             }
@@ -142,9 +146,18 @@ pub fn render_heatmap(daily_data: &[(String, f64)], metric_label: &str) -> Strin
 
 fn month_abbrev(month: u32) -> &'static str {
     match month {
-        1 => "Jan", 2 => "Feb", 3 => "Mar", 4 => "Apr",
-        5 => "May", 6 => "Jun", 7 => "Jul", 8 => "Aug",
-        9 => "Sep", 10 => "Oct", 11 => "Nov", 12 => "Dec",
+        1 => "Jan",
+        2 => "Feb",
+        3 => "Mar",
+        4 => "Apr",
+        5 => "May",
+        6 => "Jun",
+        7 => "Jul",
+        8 => "Aug",
+        9 => "Sep",
+        10 => "Oct",
+        11 => "Nov",
+        12 => "Dec",
         _ => "???",
     }
 }
@@ -199,10 +212,22 @@ mod tests {
         let data = vec![("2026-04-01".into(), 100.0), ("2026-04-07".into(), 200.0)];
         let output = render_heatmap(&data, "tokens");
         let lines: Vec<&str> = output.lines().collect();
-        let first_data = lines.iter().position(|l| l.contains("Mon") || l.contains(EMPTY)).unwrap_or(0);
-        let legend = lines.iter().position(|l| l.contains("Less")).unwrap_or(lines.len());
-        let data_rows = lines[first_data..legend].iter().filter(|l| !l.is_empty()).count();
-        assert_eq!(data_rows, 7, "should have 7 rows (Sun-Sat), got {data_rows}");
+        let first_data = lines
+            .iter()
+            .position(|l| l.contains("Mon") || l.contains(EMPTY))
+            .unwrap_or(0);
+        let legend = lines
+            .iter()
+            .position(|l| l.contains("Less"))
+            .unwrap_or(lines.len());
+        let data_rows = lines[first_data..legend]
+            .iter()
+            .filter(|l| !l.is_empty())
+            .count();
+        assert_eq!(
+            data_rows, 7,
+            "should have 7 rows (Sun-Sat), got {data_rows}"
+        );
     }
 
     #[test]

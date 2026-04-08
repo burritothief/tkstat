@@ -10,13 +10,7 @@ pub struct ModelPricing {
 }
 
 impl ModelPricing {
-    pub fn calculate(
-        &self,
-        input: u64,
-        output: u64,
-        cache_read: u64,
-        cache_creation: u64,
-    ) -> f64 {
+    pub fn calculate(&self, input: u64, output: u64, cache_read: u64, cache_creation: u64) -> f64 {
         (input as f64 * self.input_per_1m
             + output as f64 * self.output_per_1m
             + cache_read as f64 * self.cache_read_per_1m

@@ -77,7 +77,10 @@ fn main() -> Result<()> {
         }
         OutputMode::Json(period) => {
             let rows = db::query::query_by_period(
-                database.conn(), period, &filter, cli.effective_limit(),
+                database.conn(),
+                period,
+                &filter,
+                cli.effective_limit(),
             )?;
             render::json::render_json(&rows)
         }
@@ -91,9 +94,17 @@ fn main() -> Result<()> {
         }
         OutputMode::Table(period) => {
             let rows = db::query::query_by_period(
-                database.conn(), period, &filter, cli.effective_limit(),
+                database.conn(),
+                period,
+                &filter,
+                cli.effective_limit(),
             )?;
-            render::table::render_table(&period.to_string(), &rows, &columns, filter_desc.as_deref())
+            render::table::render_table(
+                &period.to_string(),
+                &rows,
+                &columns,
+                filter_desc.as_deref(),
+            )
         }
     };
 

@@ -1,4 +1,4 @@
-use crate::domain::usage::{format_cost, format_tokens, AggregatedRow};
+use crate::domain::usage::{AggregatedRow, format_cost, format_tokens};
 
 /// Render a short summary (like vnstat -s).
 pub fn render_summary(summary: &AggregatedRow) -> String {
@@ -29,9 +29,15 @@ mod tests {
     #[test]
     fn test_summary_rendering() {
         let row = AggregatedRow {
-            input_tokens: 50000, output_tokens: 12000, cache_creation_tokens: 8000,
-            cache_read_tokens: 200000, total_tokens: 270000, cost_usd: 5.42,
-            request_count: 150, session_count: 12, ..Default::default()
+            input_tokens: 50000,
+            output_tokens: 12000,
+            cache_creation_tokens: 8000,
+            cache_read_tokens: 200000,
+            total_tokens: 270000,
+            cost_usd: 5.42,
+            request_count: 150,
+            session_count: 12,
+            ..Default::default()
         };
         let output = render_summary(&row);
         assert!(output.contains("150"));

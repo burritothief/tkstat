@@ -36,7 +36,11 @@ pub fn filter_description(
         (None, Some(e)) => parts.push(format!("until {e}")),
         (None, None) => {}
     }
-    if parts.is_empty() { None } else { Some(parts.join(", ")) }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
 }
 
 #[cfg(test)]
@@ -50,12 +54,21 @@ mod tests {
 
     #[test]
     fn test_filter_description_model() {
-        assert_eq!(filter_description(Some("opus"), None, None, None).unwrap(), "model: opus");
+        assert_eq!(
+            filter_description(Some("opus"), None, None, None).unwrap(),
+            "model: opus"
+        );
     }
 
     #[test]
     fn test_filter_description_combined() {
-        let d = filter_description(Some("sonnet"), Some("myproj"), Some("2026-04-01"), Some("2026-04-07")).unwrap();
+        let d = filter_description(
+            Some("sonnet"),
+            Some("myproj"),
+            Some("2026-04-01"),
+            Some("2026-04-07"),
+        )
+        .unwrap();
         assert!(d.contains("model: sonnet"));
         assert!(d.contains("project: myproj"));
         assert!(d.contains("2026-04-01 to 2026-04-07"));

@@ -71,6 +71,9 @@ mod tests {
 
     #[test]
     fn test_resolve_db_path_override() {
-        assert_eq!(resolve_db_path(Some("/tmp/my.db")), PathBuf::from("/tmp/my.db"));
+        assert_eq!(
+            resolve_db_path(Some("/tmp/my.db")),
+            PathBuf::from("/tmp/my.db")
+        );
     }
 }
