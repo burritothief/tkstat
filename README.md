@@ -1,6 +1,6 @@
 # tkstat
 
-A terminal-based token usage monitor for Claude Code, inspired by [vnstat](https://github.com/vergoh/vnstat).
+Terminal-based token usage monitor for Claude Code, inspired by [vnstat](https://github.com/vergoh/vnstat).
 
 Claude Code writes session logs as JSONL files, but there's no built-in way to see how many tokens you're burning across days, weeks, or months. `tkstat` parses JSONL logs into a local SQLite database, then queries it.
 
