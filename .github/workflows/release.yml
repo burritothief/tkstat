@@ -63,7 +63,7 @@ jobs:
           $archive = "tkstat-$env:GITHUB_REF_NAME-${{ matrix.name }}.${{ matrix.archive }}"
           Compress-Archive -Path "target/release/${{ matrix.binary }}" -DestinationPath "dist/$archive"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: dist/*
