@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow, bail};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use rusqlite::{Connection, types::ValueRef};
 use serde::Deserialize;
 use serde::Serialize;
@@ -15,9 +15,14 @@ use crate::domain::timestamp::{format_utc_rfc3339, parse_canonical_utc_rfc3339};
 use crate::domain::usage::TokenRecord;
 
 const BUNDLED_PRICING_CATALOG_JSON: &str = include_str!("../../pricing/catalog.json");
+const SOURCE_STALE_AFTER_DAYS: i64 = 90;
 
 pub trait PricingFetcher {
     fn fetch_current_prices(&self) -> Result<Vec<PricingInterval>>;
+
+    fn fetch_source_metadata(&self) -> Result<Vec<PricingSourceMetadata>> {
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -42,6 +47,11 @@ pub enum PricingAuditKind {
     MissingCoverage,
     UsageBeforeFirstInterval,
     UsageAfterLastInterval,
+    MissingSourceMetadata,
+    StaleSource,
+    BundledFallbackSource,
+    UnknownObservedModel,
+    UnsupportedModifier,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -91,6 +101,22 @@ struct RawPricingInterval {
     source: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PricingSourceMetadata {
+    pub source: String,
+    pub source_url: String,
+    pub source_retrieved_at: String,
+    pub catalog_version: String,
+    pub source_kind: String,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone)]
+struct PricingCatalogData {
+    intervals: Vec<PricingInterval>,
+    sources: Vec<PricingSourceMetadata>,
+}
+
 #[derive(Debug, Deserialize)]
 struct PricingCatalog {
     schema_version: u32,
@@ -135,11 +161,16 @@ struct CatalogDimensions {
 
 struct StaticPricingFetcher {
     intervals: Vec<PricingInterval>,
+    sources: Vec<PricingSourceMetadata>,
 }
 
 impl PricingFetcher for StaticPricingFetcher {
     fn fetch_current_prices(&self) -> Result<Vec<PricingInterval>> {
         Ok(self.intervals.clone())
+    }
+
+    fn fetch_source_metadata(&self) -> Result<Vec<PricingSourceMetadata>> {
+        Ok(self.sources.clone())
     }
 }
 
@@ -171,6 +202,10 @@ pub struct BundledPricingFetcher;
 impl PricingFetcher for BundledPricingFetcher {
     fn fetch_current_prices(&self) -> Result<Vec<PricingInterval>> {
         Ok(seed_intervals())
+    }
+
+    fn fetch_source_metadata(&self) -> Result<Vec<PricingSourceMetadata>> {
+        Ok(bundled_catalog_data()?.sources)
     }
 }
 
@@ -226,9 +261,11 @@ pub fn insert_interval_if_missing(conn: &Connection, interval: &PricingInterval)
 }
 
 pub fn seed_pricing(conn: &Connection) -> Result<usize> {
-    seed_pricing_intervals(conn, &seed_intervals())
+    let data = bundled_catalog_data()?;
+    seed_pricing_catalog_data(conn, &data)
 }
 
+#[cfg(test)]
 fn seed_pricing_intervals(conn: &Connection, intervals: &[PricingInterval]) -> Result<usize> {
     for interval in intervals {
         validate_interval(interval)?;
@@ -245,9 +282,36 @@ fn seed_pricing_intervals(conn: &Connection, intervals: &[PricingInterval]) -> R
     Ok(inserted)
 }
 
+fn seed_pricing_catalog_data(conn: &Connection, data: &PricingCatalogData) -> Result<usize> {
+    for source in &data.sources {
+        validate_source_metadata(source)?;
+    }
+    for interval in &data.intervals {
+        validate_interval(interval)?;
+    }
+
+    let tx = conn.unchecked_transaction()?;
+    for source in &data.sources {
+        upsert_source_metadata(&tx, source)?;
+    }
+    let mut inserted = 0;
+    for interval in &data.intervals {
+        if insert_interval_if_missing(&tx, interval)? {
+            inserted += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(inserted)
+}
+
 pub fn refresh_pricing(conn: &Connection, fetcher: &dyn PricingFetcher) -> Result<usize> {
     let intervals = fetcher.fetch_current_prices()?;
+    let sources = fetcher.fetch_source_metadata()?;
     let tx = conn.unchecked_transaction()?;
+    for source in &sources {
+        validate_source_metadata(source)?;
+        upsert_source_metadata(&tx, source)?;
+    }
     let mut changed = 0;
     for interval in intervals {
         validate_interval(&interval)?;
@@ -263,8 +327,32 @@ pub fn import_pricing_catalog_file(conn: &Connection, path: &Path) -> Result<usi
 }
 
 pub fn import_pricing_catalog_json(conn: &Connection, contents: &str) -> Result<usize> {
-    let intervals = catalog_intervals_from_str(contents)?;
-    refresh_pricing(conn, &StaticPricingFetcher { intervals })
+    let data = catalog_data_from_str(contents, "reviewed")?;
+    refresh_pricing(
+        conn,
+        &StaticPricingFetcher {
+            intervals: data.intervals,
+            sources: data.sources,
+        },
+    )
+}
+
+pub fn upsert_source_metadata(conn: &Connection, source: &PricingSourceMetadata) -> Result<()> {
+    validate_source_metadata(source)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO pricing_sources
+            (source, source_url, source_retrieved_at, catalog_version, source_kind, notes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            source.source,
+            source.source_url,
+            source.source_retrieved_at,
+            source.catalog_version,
+            source.source_kind,
+            source.notes,
+        ],
+    )?;
+    Ok(())
 }
 
 fn upsert_current_interval(conn: &Connection, interval: &PricingInterval) -> Result<usize> {
@@ -281,7 +369,38 @@ fn upsert_current_interval(conn: &Connection, interval: &PricingInterval) -> Res
             if (existing.rate_per_1m_tokens - interval.rate_per_1m_tokens).abs() < f64::EPSILON
                 && existing.currency == interval.currency =>
         {
-            Ok(0)
+            if existing.source == interval.source {
+                return Ok(0);
+            }
+            conn.execute(
+                "UPDATE pricing_intervals
+                 SET source = ?1
+                 WHERE provider = ?2
+                   AND model_id = ?3
+                   AND token_category = ?4
+                   AND service_tier IS ?5
+                   AND speed IS ?6
+                   AND region IS ?7
+                   AND processing_mode IS ?8
+                   AND source_detail IS ?9
+                   AND currency = ?10
+                   AND effective_from = ?11
+                   AND effective_to IS NULL",
+                rusqlite::params![
+                    interval.source,
+                    existing.provider.as_str(),
+                    existing.model_id,
+                    existing.token_category.as_str(),
+                    existing.dimensions.service_tier,
+                    existing.dimensions.speed,
+                    existing.dimensions.region,
+                    existing.dimensions.processing_mode,
+                    existing.dimensions.source_detail,
+                    existing.currency,
+                    format_utc_rfc3339(existing.effective_from),
+                ],
+            )?;
+            Ok(1)
         }
         Some(existing) => {
             if existing.effective_from > interval.effective_from {
@@ -480,11 +599,273 @@ pub fn audit_pricing(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
     let mut findings = audit_catalog(conn)?;
     if table_exists(conn, "token_usage")? {
         findings.extend(audit_usage_coverage(conn)?);
+        findings.extend(audit_usage_source_quality(conn)?);
     } else {
         findings.push(schema_finding(
             PricingAuditKind::MissingSchema,
             "token_usage table is missing; run `tkstat --force-update` to ingest usage before checking coverage",
         ));
+    }
+    Ok(findings)
+}
+
+fn audit_usage_source_quality(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
+    if !table_exists(conn, "usage_billing_components")?
+        || table_row_count(conn, "usage_billing_components")? == 0
+    {
+        return Ok(Vec::new());
+    }
+
+    let mut findings = Vec::new();
+    findings.extend(audit_unknown_observed_models(conn)?);
+    findings.extend(audit_unsupported_modifiers(conn)?);
+    findings.extend(audit_used_pricing_sources(conn)?);
+    Ok(findings)
+}
+
+fn audit_unknown_observed_models(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT c.provider, c.model_id
+         FROM usage_billing_components c
+         LEFT JOIN pricing_intervals p
+           ON p.provider = c.provider
+          AND p.model_id = c.model_id
+         WHERE p.id IS NULL
+         ORDER BY c.provider, c.model_id",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|(provider, model_id)| {
+            finding_raw(
+                PricingAuditSeverity::Warning,
+                PricingAuditKind::UnknownObservedModel,
+                raw_audit_key(&provider, &model_id, ""),
+                None,
+                None,
+                "add reviewed pricing for the observed model id or import an updated pricing catalog",
+            )
+        })
+        .collect())
+}
+
+fn audit_unsupported_modifiers(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
+    if !pricing_intervals_have_dimensions(conn)? {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT c.provider, c.model_id, c.token_category, c.service_tier, c.speed,
+                c.region, c.processing_mode, c.source_detail
+         FROM usage_billing_components c
+         WHERE (c.service_tier IS NOT NULL
+             OR c.speed IS NOT NULL
+             OR c.region IS NOT NULL
+             OR c.processing_mode IS NOT NULL
+             OR c.source_detail IS NOT NULL)
+           AND NOT EXISTS (
+               SELECT 1
+               FROM pricing_intervals p
+               WHERE p.provider = c.provider
+                 AND p.model_id = c.model_id
+                 AND p.token_category = c.token_category
+                 AND p.service_tier IS c.service_tier
+                 AND p.speed IS c.speed
+                 AND p.region IS c.region
+                 AND p.processing_mode IS c.processing_mode
+                 AND p.source_detail IS c.source_detail
+           )
+         ORDER BY c.provider, c.model_id, c.token_category",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                PricingDimensions {
+                    service_tier: row.get(3)?,
+                    speed: row.get(4)?,
+                    region: row.get(5)?,
+                    processing_mode: row.get(6)?,
+                    source_detail: row.get(7)?,
+                },
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut findings = Vec::new();
+    for (provider, model_id, token_category, dimensions) in rows {
+        let Ok(category) = token_category.parse::<TokenCategory>() else {
+            continue;
+        };
+        findings.push(finding(
+            PricingAuditSeverity::Warning,
+            PricingAuditKind::UnsupportedModifier,
+            audit_key(&provider, &model_id, category, &dimensions),
+            None,
+            None,
+            "add a specialized pricing interval for the observed modifier combination",
+        ));
+    }
+    Ok(findings)
+}
+
+fn audit_used_pricing_sources(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
+    if table_exists(conn, "pricing_sources")? {
+        audit_used_pricing_sources_with_metadata(conn)
+    } else {
+        audit_used_pricing_sources_without_metadata(conn)
+    }
+}
+
+fn audit_used_pricing_sources_without_metadata(
+    conn: &Connection,
+) -> Result<Vec<PricingAuditFinding>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT c.provider, c.model_id, c.token_category, p.effective_from,
+                p.effective_to, p.source
+         FROM usage_billing_components c
+         JOIN pricing_intervals p
+           ON p.provider = c.provider
+          AND p.model_id = c.model_id
+          AND p.token_category = c.token_category
+          AND p.effective_from <= c.timestamp
+          AND (p.effective_to IS NULL OR c.timestamp < p.effective_to)
+         ORDER BY c.provider, c.model_id, c.token_category, p.source",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|(provider, model_id, category, start, end, source)| {
+            finding_raw(
+                PricingAuditSeverity::Warning,
+                PricingAuditKind::MissingSourceMetadata,
+                raw_audit_key(&provider, &model_id, &category),
+                Some(start),
+                end,
+                &format!(
+                    "pricing source metadata is missing for source={source}; import a reviewed catalog or reseed pricing"
+                ),
+            )
+        })
+        .collect())
+}
+
+fn audit_used_pricing_sources_with_metadata(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
+    let cutoff = Utc::now().date_naive() - Duration::days(SOURCE_STALE_AFTER_DAYS);
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT c.provider, c.model_id, c.token_category, p.effective_from,
+                p.effective_to, p.source, s.source_url, s.source_retrieved_at,
+                s.catalog_version, s.source_kind
+         FROM usage_billing_components c
+         JOIN pricing_intervals p
+           ON p.provider = c.provider
+          AND p.model_id = c.model_id
+          AND p.token_category = c.token_category
+          AND p.service_tier IS c.service_tier
+          AND p.speed IS c.speed
+          AND p.region IS c.region
+          AND p.processing_mode IS c.processing_mode
+          AND p.source_detail IS c.source_detail
+          AND p.effective_from <= c.timestamp
+          AND (p.effective_to IS NULL OR c.timestamp < p.effective_to)
+         LEFT JOIN pricing_sources s
+           ON s.source = p.source
+         ORDER BY c.provider, c.model_id, c.token_category, p.source",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut findings = Vec::new();
+    for (
+        provider,
+        model_id,
+        category,
+        start,
+        end,
+        source,
+        source_url,
+        retrieved_at,
+        catalog_version,
+        source_kind,
+    ) in rows
+    {
+        let key = raw_audit_key(&provider, &model_id, &category);
+        if source_url.as_deref().is_none_or(str::is_empty)
+            || retrieved_at.as_deref().is_none_or(str::is_empty)
+            || catalog_version.as_deref().is_none_or(str::is_empty)
+            || source_kind.as_deref().is_none_or(str::is_empty)
+        {
+            findings.push(finding_raw(
+                PricingAuditSeverity::Warning,
+                PricingAuditKind::MissingSourceMetadata,
+                key,
+                Some(start.clone()),
+                end.clone(),
+                &format!(
+                    "pricing source metadata is missing for source={source}; import a reviewed catalog or reseed pricing"
+                ),
+            ));
+            continue;
+        }
+
+        let retrieved_at = retrieved_at.unwrap();
+        if let Ok(retrieved_date) = NaiveDate::parse_from_str(&retrieved_at, "%Y-%m-%d")
+            && retrieved_date < cutoff
+        {
+            findings.push(finding_raw(
+                PricingAuditSeverity::Warning,
+                PricingAuditKind::StaleSource,
+                key,
+                Some(start.clone()),
+                end.clone(),
+                &format!(
+                    "pricing source {source} was retrieved at {retrieved_at}; import a reviewed catalog if provider pricing changed"
+                ),
+            ));
+        }
+
+        if source_kind.as_deref() == Some("bundled") {
+            findings.push(finding_raw(
+                PricingAuditSeverity::Info,
+                PricingAuditKind::BundledFallbackSource,
+                key,
+                Some(start),
+                end,
+                &format!(
+                    "usage was priced with bundled fallback source={source}; import reviewed pricing for current local estimates"
+                ),
+            ));
+        }
     }
     Ok(findings)
 }
@@ -1334,10 +1715,21 @@ fn bundled_catalog_intervals() -> Result<Vec<PricingInterval>> {
     catalog_intervals_from_str(BUNDLED_PRICING_CATALOG_JSON)
 }
 
+fn bundled_catalog_data() -> Result<PricingCatalogData> {
+    catalog_data_from_str(BUNDLED_PRICING_CATALOG_JSON, "bundled")
+}
+
 fn catalog_intervals_from_str(contents: &str) -> Result<Vec<PricingInterval>> {
+    Ok(catalog_data_from_str(contents, "reviewed")?.intervals)
+}
+
+fn catalog_data_from_str(contents: &str, source_kind: &str) -> Result<PricingCatalogData> {
     let catalog: PricingCatalog = serde_json::from_str(contents)?;
     validate_catalog(&catalog)?;
-    catalog_to_intervals(&catalog)
+    Ok(PricingCatalogData {
+        intervals: catalog_to_intervals(&catalog)?,
+        sources: catalog_to_source_metadata(&catalog, source_kind)?,
+    })
 }
 
 fn validate_catalog(catalog: &PricingCatalog) -> Result<()> {
@@ -1434,6 +1826,47 @@ fn validate_catalog(catalog: &PricingCatalog) -> Result<()> {
     Ok(())
 }
 
+fn validate_source_metadata(source: &PricingSourceMetadata) -> Result<()> {
+    if source.source.trim().is_empty() {
+        bail!("pricing source metadata source must not be empty");
+    }
+    if source.source_url.trim().is_empty() {
+        bail!(
+            "pricing source metadata {} source_url must not be empty",
+            source.source
+        );
+    }
+    if source.catalog_version.trim().is_empty() {
+        bail!(
+            "pricing source metadata {} catalog_version must not be empty",
+            source.source
+        );
+    }
+    if source.notes.trim().is_empty() {
+        bail!(
+            "pricing source metadata {} notes must not be empty",
+            source.source
+        );
+    }
+    if !matches!(
+        source.source_kind.as_str(),
+        "bundled" | "reviewed" | "manual"
+    ) {
+        bail!(
+            "pricing source metadata {} has unsupported source_kind {}; expected bundled, reviewed, or manual",
+            source.source,
+            source.source_kind
+        );
+    }
+    NaiveDate::parse_from_str(&source.source_retrieved_at, "%Y-%m-%d").map_err(|err| {
+        anyhow!(
+            "pricing source metadata {} has invalid source_retrieved_at date: {err}",
+            source.source
+        )
+    })?;
+    Ok(())
+}
+
 fn validate_catalog_entry(entry: &CatalogEntry, source_ids: &HashSet<&str>) -> Result<()> {
     if entry.model_ids.is_empty() {
         bail!(
@@ -1505,6 +1938,43 @@ fn catalog_to_intervals(catalog: &PricingCatalog) -> Result<Vec<PricingInterval>
         }
     }
     Ok(intervals)
+}
+
+fn catalog_to_source_metadata(
+    catalog: &PricingCatalog,
+    source_kind: &str,
+) -> Result<Vec<PricingSourceMetadata>> {
+    let sources_by_id: HashMap<&str, &CatalogSource> = catalog
+        .sources
+        .iter()
+        .map(|source| (source.id.as_str(), source))
+        .collect();
+    let mut metadata_by_source = BTreeMap::new();
+    for entry in &catalog.entries {
+        let source = sources_by_id
+            .get(entry.source_ref.as_str())
+            .ok_or_else(|| {
+                anyhow!(
+                    "pricing catalog entry source_ref {} does not match a source",
+                    entry.source_ref
+                )
+            })?;
+        metadata_by_source
+            .entry(entry.source.clone())
+            .or_insert_with(|| PricingSourceMetadata {
+                source: entry.source.clone(),
+                source_url: source.url.clone(),
+                source_retrieved_at: source.retrieved_at.clone(),
+                catalog_version: catalog.schema_version.to_string(),
+                source_kind: source_kind.into(),
+                notes: format!("{}; {}", source.notes, entry.notes),
+            });
+    }
+    let metadata: Vec<_> = metadata_by_source.into_values().collect();
+    for source in &metadata {
+        validate_source_metadata(source)?;
+    }
+    Ok(metadata)
 }
 
 impl CatalogDimensions {
@@ -1671,6 +2141,21 @@ mod tests {
   ]
 }}"#
         )
+    }
+
+    fn source_metadata(
+        source: &str,
+        retrieved_at: &str,
+        source_kind: &str,
+    ) -> PricingSourceMetadata {
+        PricingSourceMetadata {
+            source: source.into(),
+            source_url: "https://example.com/pricing".into(),
+            source_retrieved_at: retrieved_at.into(),
+            catalog_version: "1".into(),
+            source_kind: source_kind.into(),
+            notes: "test pricing source metadata".into(),
+        }
     }
 
     #[test]
@@ -2098,6 +2583,15 @@ mod tests {
         .unwrap();
         assert_eq!(selected.rate_per_1m_tokens, 0.25);
         assert!(selected.source.starts_with("seed:"));
+        let source_kind: String = db
+            .conn()
+            .query_row(
+                "SELECT source_kind FROM pricing_sources WHERE source = ?1",
+                [selected.source],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_kind, "bundled");
     }
 
     #[test]
@@ -2201,6 +2695,15 @@ mod tests {
         );
         assert_eq!(new.rate_per_1m_tokens, 12.0);
         assert_eq!(new.effective_to, None);
+        let source_kind: String = db
+            .conn()
+            .query_row(
+                "SELECT source_kind FROM pricing_sources WHERE source = 'seed:test-source'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_kind, "reviewed");
     }
 
     #[test]
@@ -2529,6 +3032,108 @@ mod tests {
                 && finding.provider == "codex"
                 && finding.model_id == "gpt-audit"
                 && finding.token_category == "cached_input"
+        }));
+    }
+
+    #[test]
+    fn test_pricing_audit_reports_stale_source_metadata_for_used_prices() {
+        let db = Database::open_in_memory().unwrap();
+        let mut price = interval(TokenCategory::Input, 10.0, "2026-01-01T00:00:00Z", None);
+        price.source = "reviewed:old-source".into();
+        insert_interval(db.conn(), &price).unwrap();
+        upsert_source_metadata(
+            db.conn(),
+            &source_metadata("reviewed:old-source", "2025-01-01", "reviewed"),
+        )
+        .unwrap();
+        let mut usage = record("claude-opus-4-6");
+        usage.output_tokens = 0;
+        db.insert_records(&[usage]).unwrap();
+
+        let findings = audit_pricing(db.conn()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding.kind == PricingAuditKind::StaleSource
+                && finding.provider == "claude-code"
+                && finding.model_id == "claude-opus-4-6"
+                && finding.token_category == "input"
+                && finding.remediation.contains("reviewed:old-source")
+        }));
+    }
+
+    #[test]
+    fn test_pricing_audit_reports_missing_source_metadata_for_used_prices() {
+        let db = Database::open_in_memory().unwrap();
+        let mut price = interval(TokenCategory::Input, 10.0, "2026-01-01T00:00:00Z", None);
+        price.source = "manual:without-metadata".into();
+        insert_interval(db.conn(), &price).unwrap();
+        let mut usage = record("claude-opus-4-6");
+        usage.output_tokens = 0;
+        db.insert_records(&[usage]).unwrap();
+
+        let findings = audit_pricing(db.conn()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding.kind == PricingAuditKind::MissingSourceMetadata
+                && finding.provider == "claude-code"
+                && finding.model_id == "claude-opus-4-6"
+                && finding.token_category == "input"
+                && finding.remediation.contains("manual:without-metadata")
+        }));
+    }
+
+    #[test]
+    fn test_pricing_audit_reports_unknown_observed_model_ids() {
+        let db = Database::open_in_memory().unwrap();
+        let mut usage = record("claude-unknown-4-9");
+        usage.output_tokens = 0;
+        db.insert_records(&[usage]).unwrap();
+
+        let findings = audit_pricing(db.conn()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding.kind == PricingAuditKind::UnknownObservedModel
+                && finding.provider == "claude-code"
+                && finding.model_id == "claude-unknown-4-9"
+                && finding.token_category.is_empty()
+        }));
+    }
+
+    #[test]
+    fn test_pricing_audit_reports_observed_modifiers_without_specialized_prices() {
+        let db = Database::open_in_memory().unwrap();
+        insert_interval(
+            db.conn(),
+            &interval(TokenCategory::Input, 10.0, "2026-01-01T00:00:00Z", None),
+        )
+        .unwrap();
+        let mut usage = record("claude-opus-4-6");
+        usage.output_tokens = 0;
+        usage.speed = Some("fast".into());
+        db.insert_records(&[usage]).unwrap();
+
+        let findings = audit_pricing(db.conn()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding.kind == PricingAuditKind::UnsupportedModifier
+                && finding.provider == "claude-code"
+                && finding.model_id == "claude-opus-4-6"
+                && finding.token_category == "input"
+                && finding.remediation.contains("speed=fast")
+        }));
+    }
+
+    #[test]
+    fn test_pricing_audit_reports_bundled_fallback_usage() {
+        let db = Database::open_in_memory().unwrap();
+        seed_pricing(db.conn()).unwrap();
+        let mut usage = record("claude-opus-4-6");
+        usage.output_tokens = 0;
+        db.insert_records(&[usage]).unwrap();
+
+        let findings = audit_pricing(db.conn()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding.kind == PricingAuditKind::BundledFallbackSource
+                && finding.severity == PricingAuditSeverity::Info
+                && finding.provider == "claude-code"
+                && finding.model_id == "claude-opus-4-6"
+                && finding.token_category == "input"
         }));
     }
 

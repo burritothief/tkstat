@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
+use crate::db::pricing::{self, PricingAuditFinding};
 use crate::db::schema::SCHEMA_VERSION;
 use crate::ingest::{self, CodexAdapter, ProviderAdapter, ProviderSources};
 
@@ -92,6 +93,7 @@ pub struct PricingInventory {
     pub interval_count: u64,
     pub open_interval_count: u64,
     pub model_count: u64,
+    pub audit_findings: Vec<PricingAuditFinding>,
 }
 
 pub fn gather_inventory(
@@ -147,6 +149,16 @@ impl DiagnosticsInventory {
             PricingStatus::MissingTable => warnings.push("pricing table is missing".into()),
             PricingStatus::Empty => warnings.push("pricing table has no intervals".into()),
             PricingStatus::Available => {}
+        }
+        for finding in &self.pricing.audit_findings {
+            warnings.push(format!(
+                "pricing {:?}: {}/{}/{} - {}",
+                finding.kind,
+                finding.provider,
+                finding.model_id,
+                finding.token_category,
+                finding.remediation
+            ));
         }
         warnings
     }
@@ -270,10 +282,16 @@ fn pricing_inventory(conn: &Connection) -> PricingInventory {
             interval_count: 0,
             open_interval_count: 0,
             model_count: 0,
+            audit_findings: Vec::new(),
         };
     }
 
     let interval_count = count_query(conn, "SELECT COUNT(*) FROM pricing_intervals");
+    let audit_findings = if interval_count == 0 {
+        Vec::new()
+    } else {
+        pricing::audit_pricing(conn).unwrap_or_default()
+    };
     PricingInventory {
         status: if interval_count == 0 {
             PricingStatus::Empty
@@ -289,6 +307,7 @@ fn pricing_inventory(conn: &Connection) -> PricingInventory {
             conn,
             "SELECT COUNT(DISTINCT provider || '/' || model_id) FROM pricing_intervals",
         ),
+        audit_findings,
     }
 }
 
@@ -356,6 +375,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::db::Database;
+    use crate::domain::pricing::{PricingInterval, TokenCategory};
+    use crate::domain::provider::ProviderId;
     use crate::domain::usage::{ModelFamily, TokenRecord};
 
     fn temp_root(test_name: &str) -> PathBuf {
@@ -473,6 +494,47 @@ mod tests {
         assert_eq!(inventory.pricing.status, PricingStatus::Available);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_inventory_reports_pricing_source_quality_findings() {
+        let db = Database::open_in_memory().unwrap();
+        let interval = PricingInterval::usd(
+            ProviderId::ClaudeCode,
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            10.0,
+            "2026-01-01T00:00:00Z".parse().unwrap(),
+            "reviewed:old-source",
+        );
+        db.insert_pricing_interval(&interval).unwrap();
+        pricing::upsert_source_metadata(
+            db.conn(),
+            &pricing::PricingSourceMetadata {
+                source: "reviewed:old-source".into(),
+                source_url: "https://example.com/pricing".into(),
+                source_retrieved_at: "2025-01-01".into(),
+                catalog_version: "1".into(),
+                source_kind: "reviewed".into(),
+                notes: "stale reviewed source".into(),
+            },
+        )
+        .unwrap();
+        let mut usage = record("claude-code", "req-stale", "claude-opus-4-6");
+        usage.output_tokens = 0;
+        db.insert_records(&[usage]).unwrap();
+
+        let inventory = gather_inventory("/tmp/tkstat.db", db.conn(), &sources(None, None));
+        assert!(inventory.pricing.audit_findings.iter().any(|finding| {
+            finding.kind == pricing::PricingAuditKind::StaleSource
+                && finding.model_id == "claude-opus-4-6"
+        }));
+        assert!(
+            inventory
+                .warnings()
+                .iter()
+                .any(|warning| warning.contains("StaleSource"))
+        );
     }
 
     #[test]
