@@ -10,6 +10,7 @@ use crate::domain::pricing::{
     billable_token_rule, default_billing_rules, provider_billing_policies,
 };
 use crate::domain::provider::ProviderId;
+use crate::domain::timestamp::{format_utc_rfc3339, parse_canonical_utc_rfc3339};
 use crate::domain::usage::{AggregatedRow, ModelFamily};
 
 /// Filter parameters for queries.
@@ -562,12 +563,16 @@ fn validate_pricing_coverage(conn: &Connection, filter: &QueryFilter) -> Result<
         let provider: String = row.get(0)?;
         let model_id: String = row.get(1)?;
         let timestamp: String = row.get(2)?;
-        let timestamp: DateTime<Utc> = timestamp.parse()?;
+        let timestamp = parse_canonical_utc_rfc3339(&timestamp).map_err(|err| {
+            anyhow::anyhow!(
+                "missing pricing coverage for provider={provider}, model={model_id}, category=timestamp, usage timestamp {timestamp}; {err}, reingest or repair token_usage.timestamp"
+            )
+        })?;
         let Some(provider_id) = ProviderId::from_canonical(&provider) else {
             bail!(
                 "missing pricing coverage for provider={provider}, model={model_id}, category=provider, usage range {} to {}; unsupported provider id in usage row, reingest or repair the database with a supported provider id such as claude-code or codex",
-                timestamp.to_rfc3339(),
-                timestamp.to_rfc3339()
+                format_utc_rfc3339(timestamp),
+                format_utc_rfc3339(timestamp)
             );
         };
         let categories = billable_token_categories_for_counts(
@@ -628,8 +633,8 @@ fn validate_category_coverage(
                 key.provider,
                 key.model_id,
                 key.category.as_str(),
-                end.to_rfc3339(),
-                start.to_rfc3339(),
+                format_utc_rfc3339(end),
+                format_utc_rfc3339(start),
             ],
             |row| {
                 let from: String = row.get(0)?;
@@ -645,16 +650,19 @@ fn validate_category_coverage(
             key.provider,
             key.model_id,
             key.category,
-            start.to_rfc3339(),
-            end.to_rfc3339()
+            format_utc_rfc3339(start),
+            format_utc_rfc3339(end)
         );
     }
 
     let mut cursor = start;
     let mut saw_covering_interval = false;
     for (idx, (from, to)) in intervals.iter().enumerate() {
-        let from: DateTime<Utc> = from.parse()?;
-        let to: Option<DateTime<Utc>> = to.as_ref().map(|dt| dt.parse()).transpose()?;
+        let from = parse_canonical_utc_rfc3339(from)?;
+        let to = to
+            .as_ref()
+            .map(|dt| parse_canonical_utc_rfc3339(dt))
+            .transpose()?;
 
         if from > cursor {
             bail!(
@@ -662,8 +670,8 @@ fn validate_category_coverage(
                 key.provider,
                 key.model_id,
                 key.category,
-                cursor.to_rfc3339(),
-                from.to_rfc3339()
+                format_utc_rfc3339(cursor),
+                format_utc_rfc3339(from)
             );
         }
         if saw_covering_interval && from < cursor {
@@ -672,7 +680,7 @@ fn validate_category_coverage(
                 key.provider,
                 key.model_id,
                 key.category,
-                from.to_rfc3339()
+                format_utc_rfc3339(from)
             );
         }
         saw_covering_interval = true;
@@ -706,8 +714,8 @@ fn validate_category_coverage(
         key.provider,
         key.model_id,
         key.category,
-        cursor.to_rfc3339(),
-        end.to_rfc3339()
+        format_utc_rfc3339(cursor),
+        format_utc_rfc3339(end)
     )
 }
 

@@ -8,6 +8,7 @@ use crate::domain::pricing::{
     PricingInterval, TokenCategory, billable_token_categories_for_counts, nonzero_token_categories,
 };
 use crate::domain::provider::ProviderId;
+use crate::domain::timestamp::{format_utc_rfc3339, parse_canonical_utc_rfc3339};
 use crate::domain::usage::TokenRecord;
 
 pub trait PricingFetcher {
@@ -26,6 +27,7 @@ pub enum PricingAuditKind {
     MissingDatabase,
     MissingSchema,
     MalformedCatalogRow,
+    MalformedUsageRow,
     UnsupportedProviderId,
     Gap,
     Overlap,
@@ -114,8 +116,8 @@ pub fn insert_interval(conn: &Connection, interval: &PricingInterval) -> Result<
             interval.token_category.as_str(),
             interval.currency,
             interval.rate_per_1m_tokens,
-            interval.effective_from.to_rfc3339(),
-            interval.effective_to.map(|dt| dt.to_rfc3339()),
+            format_utc_rfc3339(interval.effective_from),
+            interval.effective_to.map(format_utc_rfc3339),
             interval.source,
         ],
     )?;
@@ -134,8 +136,8 @@ pub fn insert_interval_if_missing(conn: &Connection, interval: &PricingInterval)
             interval.token_category.as_str(),
             interval.currency,
             interval.rate_per_1m_tokens,
-            interval.effective_from.to_rfc3339(),
-            interval.effective_to.map(|dt| dt.to_rfc3339()),
+            format_utc_rfc3339(interval.effective_from),
+            interval.effective_to.map(format_utc_rfc3339),
             interval.source,
         ],
     )?;
@@ -196,8 +198,8 @@ fn upsert_current_interval(conn: &Connection, interval: &PricingInterval) -> Res
                     interval.provider,
                     interval.model_id,
                     interval.token_category,
-                    interval.effective_from.to_rfc3339(),
-                    existing.effective_from.to_rfc3339()
+                    format_utc_rfc3339(interval.effective_from),
+                    format_utc_rfc3339(existing.effective_from)
                 );
             }
             conn.execute(
@@ -209,12 +211,12 @@ fn upsert_current_interval(conn: &Connection, interval: &PricingInterval) -> Res
                    AND currency = ?5
                    AND effective_from = ?6",
                 rusqlite::params![
-                    interval.effective_from.to_rfc3339(),
+                    format_utc_rfc3339(interval.effective_from),
                     existing.provider.as_str(),
                     existing.model_id,
                     existing.token_category.as_str(),
                     existing.currency,
-                    existing.effective_from.to_rfc3339(),
+                    format_utc_rfc3339(existing.effective_from),
                 ],
             )?;
             insert_interval_if_missing(conn, interval)?;
@@ -281,7 +283,7 @@ pub fn applicable_interval(
                 provider.as_str(),
                 model_id,
                 token_category.as_str(),
-                timestamp.to_rfc3339(),
+                format_utc_rfc3339(timestamp),
             ],
             row_to_interval,
         )?
@@ -290,12 +292,12 @@ pub fn applicable_interval(
     match rows.len() {
         0 => bail!(
             "missing price for provider={provider}, model={model_id}, category={token_category}, timestamp={}",
-            timestamp.to_rfc3339()
+            format_utc_rfc3339(timestamp)
         ),
         1 => Ok(rows.into_iter().next().unwrap()),
         _ => bail!(
             "overlapping prices for provider={provider}, model={model_id}, category={token_category}, timestamp={}",
-            timestamp.to_rfc3339()
+            format_utc_rfc3339(timestamp)
         ),
     }
 }
@@ -456,7 +458,12 @@ fn audit_usage_coverage(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
         let provider: String = row.get(0)?;
         let model_id: String = row.get(1)?;
         let timestamp: String = row.get(2)?;
-        let timestamp: DateTime<Utc> = timestamp.parse()?;
+        let Ok(timestamp) = parse_canonical_utc_rfc3339(&timestamp) else {
+            findings.push(malformed_usage_timestamp_finding(
+                &provider, &model_id, &timestamp,
+            ));
+            continue;
+        };
         let Some(provider_id) = ProviderId::from_canonical(&provider) else {
             findings.push(unsupported_usage_provider_finding(
                 &provider, &model_id, timestamp,
@@ -500,9 +507,24 @@ fn unsupported_usage_provider_finding(
         PricingAuditSeverity::Error,
         PricingAuditKind::UnsupportedProviderId,
         raw_audit_key(provider, model_id, ""),
-        Some(timestamp.to_rfc3339()),
-        Some(timestamp.to_rfc3339()),
+        Some(format_utc_rfc3339(timestamp)),
+        Some(format_utc_rfc3339(timestamp)),
         "use a supported canonical provider id such as claude-code or codex",
+    )
+}
+
+fn malformed_usage_timestamp_finding(
+    provider: &str,
+    model_id: &str,
+    timestamp: &str,
+) -> PricingAuditFinding {
+    finding_raw(
+        PricingAuditSeverity::Error,
+        PricingAuditKind::MalformedUsageRow,
+        raw_audit_key(provider, model_id, ""),
+        Some(timestamp.to_string()),
+        Some(timestamp.to_string()),
+        "store token_usage.timestamp as canonical UTC RFC3339 such as 2026-04-07T10:00:00+00:00",
     )
 }
 
@@ -604,8 +626,8 @@ fn finding(
         severity,
         kind,
         raw_audit_key(key.provider, key.model_id, key.category.as_str()),
-        start.map(|dt| dt.to_rfc3339()),
-        end.map(|dt| dt.to_rfc3339()),
+        start.map(format_utc_rfc3339),
+        end.map(format_utc_rfc3339),
         remediation,
     )
 }
@@ -702,25 +724,25 @@ fn raw_catalog_findings(raw: &RawPricingInterval) -> Vec<PricingAuditFinding> {
         ));
     }
 
-    let from = raw.effective_from.parse::<DateTime<Utc>>();
+    let from = parse_canonical_utc_rfc3339(&raw.effective_from);
     if from.is_err() {
         findings.push(malformed_finding(
             raw,
-            "store effective_from as an RFC3339 timestamp",
+            "store effective_from as canonical UTC RFC3339 such as 2026-04-07T10:00:00+00:00",
         ));
     }
     let to = raw
         .effective_to
         .as_ref()
-        .map(|dt| dt.parse::<DateTime<Utc>>())
+        .map(|dt| parse_canonical_utc_rfc3339(dt))
         .transpose();
     if to.is_err() {
         findings.push(malformed_finding(
             raw,
-            "store effective_to as an RFC3339 timestamp or NULL",
+            "store effective_to as canonical UTC RFC3339 or NULL",
         ));
     }
-    if let (Ok(from), Ok(Some(to))) = (from, to)
+    if let (Ok(from), Ok(Some(to))) = (from.as_ref(), to.as_ref())
         && to <= from
     {
         findings.push(malformed_finding(
@@ -758,11 +780,11 @@ fn raw_to_valid_interval(raw: &RawPricingInterval) -> Option<PricingInterval> {
     }
     let provider = ProviderId::from_canonical(raw.provider.as_str())?;
     let token_category = raw.token_category.parse().ok()?;
-    let effective_from = raw.effective_from.parse().ok()?;
+    let effective_from = parse_canonical_utc_rfc3339(&raw.effective_from).ok()?;
     let effective_to = raw
         .effective_to
         .as_ref()
-        .map(|dt| dt.parse())
+        .map(|dt| parse_canonical_utc_rfc3339(dt))
         .transpose()
         .ok()?;
     if let Some(effective_to) = effective_to
@@ -843,12 +865,12 @@ fn row_to_interval(row: &rusqlite::Row<'_>) -> rusqlite::Result<PricingInterval>
         })?,
         currency: row.get(3)?,
         rate_per_1m_tokens: row.get(4)?,
-        effective_from: effective_from.parse().map_err(|e| {
+        effective_from: parse_canonical_utc_rfc3339(&effective_from).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
         })?,
         effective_to: effective_to
             .map(|dt| {
-                dt.parse().map_err(|e| {
+                parse_canonical_utc_rfc3339(&dt).map_err(|e| {
                     rusqlite::Error::FromSqlConversionFailure(
                         6,
                         rusqlite::types::Type::Text,
@@ -1085,6 +1107,21 @@ mod tests {
         .unwrap();
     }
 
+    fn insert_raw_pricing_row_with_to(
+        conn: &Connection,
+        model_id: &str,
+        effective_from: &str,
+        effective_to: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO pricing_intervals
+             (provider, model_id, token_category, currency, rate_per_1m_tokens, effective_from, effective_to, source)
+             VALUES ('claude-code', ?1, 'input', 'USD', 1.0, ?2, ?3, 'test')",
+            rusqlite::params![model_id, effective_from, effective_to],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn test_insert_and_select_applicable_price() {
         let db = Database::open_in_memory().unwrap();
@@ -1101,6 +1138,41 @@ mod tests {
         )
         .unwrap();
         assert_eq!(selected.rate_per_1m_tokens, 15.0);
+    }
+
+    #[test]
+    fn test_insert_interval_canonicalizes_utc_timestamp_storage() {
+        let db = Database::open_in_memory().unwrap();
+        let mut interval = PricingInterval::usd(
+            ProviderId::ClaudeCode,
+            "claude-offset",
+            TokenCategory::Input,
+            15.0,
+            "2026-04-07T03:00:00-07:00"
+                .parse::<DateTime<chrono::FixedOffset>>()
+                .unwrap()
+                .with_timezone(&Utc),
+            "test",
+        );
+        interval.effective_to = Some(
+            "2026-04-08T03:30:00-07:00"
+                .parse::<DateTime<chrono::FixedOffset>>()
+                .unwrap()
+                .with_timezone(&Utc),
+        );
+
+        insert_interval(db.conn(), &interval).unwrap();
+
+        let (stored_from, stored_to): (String, String) = db
+            .conn()
+            .query_row(
+                "SELECT effective_from, effective_to FROM pricing_intervals WHERE model_id = 'claude-offset'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored_from, "2026-04-07T10:00:00+00:00");
+        assert_eq!(stored_to, "2026-04-08T10:30:00+00:00");
     }
 
     #[test]
@@ -1128,6 +1200,20 @@ mod tests {
             "claude-opus-4-6",
             TokenCategory::Input,
             "2026-04-07T10:00:00Z".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(selected.rate_per_1m_tokens, 15.0);
+
+        let offset_timestamp = "2026-03-31T17:30:00-07:00"
+            .parse::<DateTime<chrono::FixedOffset>>()
+            .unwrap()
+            .with_timezone(&Utc);
+        let selected = applicable_interval(
+            db.conn(),
+            ProviderId::ClaudeCode,
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            offset_timestamp,
         )
         .unwrap();
         assert_eq!(selected.rate_per_1m_tokens, 15.0);
@@ -1414,7 +1500,7 @@ mod tests {
             .execute(
                 "INSERT INTO pricing_intervals
                  (provider, model_id, token_category, currency, rate_per_1m_tokens, effective_from, effective_to, source)
-                 VALUES ('claude-code', 'claude-opus-4-6', 'input', 'EUR', 1.0, '2026-01-01T00:00:00Z', NULL, 'test')",
+                 VALUES ('claude-code', 'claude-opus-4-6', 'input', 'EUR', 1.0, '2026-01-01T00:00:00+00:00', NULL, 'test')",
                 [],
             )
             .unwrap();
@@ -1540,6 +1626,38 @@ mod tests {
     }
 
     #[test]
+    fn test_pricing_audit_reports_noncanonical_catalog_timestamps() {
+        let db = Database::open_in_memory().unwrap();
+        db.conn()
+            .execute("PRAGMA ignore_check_constraints = ON", [])
+            .unwrap();
+        for (model_id, from, to) in [
+            ("zulu-utc", "2026-04-07T10:00:00Z", None),
+            ("naive", "2026-04-07 10:00:00", None),
+            ("local-offset", "2026-04-07T03:00:00-07:00", None),
+            (
+                "noncanonical-to",
+                "2026-04-07T10:00:00+00:00",
+                Some("2026-04-08T03:30:00-07:00"),
+            ),
+        ] {
+            insert_raw_pricing_row_with_to(db.conn(), model_id, from, to);
+        }
+
+        let findings = audit_pricing(db.conn()).unwrap();
+        for model_id in ["zulu-utc", "naive", "local-offset", "noncanonical-to"] {
+            assert!(
+                findings.iter().any(|finding| {
+                    finding.kind == PricingAuditKind::MalformedCatalogRow
+                        && finding.model_id == model_id
+                        && finding.remediation.contains("canonical UTC RFC3339")
+                }),
+                "missing noncanonical catalog timestamp finding for {model_id}: {findings:#?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_pricing_audit_detects_missing_cached_token_pricing_for_usage() {
         let db = Database::open_in_memory().unwrap();
         let mut usage = record("gpt-audit");
@@ -1599,7 +1717,7 @@ mod tests {
                  input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
                  cached_input_tokens, reasoning_output_tokens, total_tokens, cost_usd, project, source_file, is_subagent)
              VALUES
-                ('unsupported-provider', 'r1', 's1', 'u1', '2026-04-07T10:00:00Z', 'unknown', 'legacy-model',
+                ('unsupported-provider', 'r1', 's1', 'u1', '2026-04-07T10:00:00+00:00', 'unknown', 'legacy-model',
                  10, 0, 0, 0, 0, 0, 10, 0.0, 'legacy', '/legacy.jsonl', 0);",
         )
         .unwrap();
@@ -1614,6 +1732,41 @@ mod tests {
                     .remediation
                     .contains("supported canonical provider id")
         }));
+    }
+
+    #[test]
+    fn test_pricing_audit_reports_malformed_usage_timestamps_without_aborting() {
+        let db = Database::open_in_memory().unwrap();
+        for (request_id, timestamp, model_id) in [
+            ("bad", "not-a-date", "bad-model"),
+            ("naive", "2026-04-07 10:00:00", "naive-model"),
+            ("offset", "2026-04-07T03:00:00-07:00", "offset-model"),
+        ] {
+            db.conn()
+                .execute(
+                    "INSERT INTO token_usage
+                     (provider, request_id, session_id, uuid, timestamp, model_family, model_id,
+                      input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+                      cached_input_tokens, reasoning_output_tokens, cost_usd, project, source_file, is_subagent)
+                     VALUES ('claude-code', ?1, 's1', 'u1', ?2, 'unknown', ?3,
+                      10, 0, 0, 0, 0, 0, 0.0, 'manual', '/manual.jsonl', 0)",
+                    rusqlite::params![request_id, timestamp, model_id],
+                )
+                .unwrap();
+        }
+
+        let findings = audit_pricing(db.conn()).unwrap();
+        for model_id in ["bad-model", "naive-model", "offset-model"] {
+            assert!(
+                findings.iter().any(|finding| {
+                    finding.kind == PricingAuditKind::MalformedUsageRow
+                        && finding.provider == "claude-code"
+                        && finding.model_id == model_id
+                        && finding.remediation.contains("canonical UTC RFC3339")
+                }),
+                "missing malformed usage timestamp finding for {model_id}: {findings:#?}"
+            );
+        }
     }
 
     #[test]

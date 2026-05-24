@@ -386,7 +386,7 @@ fn test_pricing_audit_json_reports_unsupported_usage_provider_without_aborting()
              input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
              cached_input_tokens, reasoning_output_tokens, total_tokens, cost_usd, project, source_file, is_subagent)
          VALUES
-            ('manual-provider', 'r1', 's1', 'u1', '2026-04-07T10:00:00Z', 'unknown', 'manual-model',
+            ('manual-provider', 'r1', 's1', 'u1', '2026-04-07T10:00:00+00:00', 'unknown', 'manual-model',
              10, 0, 0, 0, 0, 0, 10, 0.0, 'manual', '/manual.jsonl', 0);",
     )
     .unwrap();

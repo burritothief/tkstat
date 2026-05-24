@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::db::{ensure_non_empty, u64_to_sql_i64};
+use crate::domain::timestamp::format_utc_rfc3339;
 use crate::domain::usage::TokenRecord;
 
 /// Batch insert records, ignoring only duplicate provider/request_id source events.
@@ -44,7 +45,7 @@ pub fn batch_insert(conn: &Connection, records: &[TokenRecord]) -> Result<usize>
                 r.request_id,
                 r.session_id,
                 r.uuid,
-                r.timestamp.to_rfc3339(),
+                format_utc_rfc3339(r.timestamp),
                 r.model.as_str(),
                 r.model_id,
                 u64_to_sql_i64("input_tokens", r.input_tokens)?,
@@ -81,7 +82,7 @@ mod tests {
     use super::*;
     use crate::db::Database;
     use crate::domain::usage::ModelFamily;
-    use chrono::Utc;
+    use chrono::{DateTime, Utc};
 
     fn make_record(request_id: &str, output_tokens: u64) -> TokenRecord {
         TokenRecord {
@@ -150,6 +151,41 @@ mod tests {
         assert_eq!(model_id, "claude-opus-4-6");
         assert_eq!(output, 42);
         assert!((cost - 0.05).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_insert_canonicalizes_utc_timestamp_storage() {
+        let db = Database::open_in_memory().unwrap();
+        for (request_id, source_timestamp, expected_stored) in [
+            ("z", "2026-04-07T10:00:00Z", "2026-04-07T10:00:00+00:00"),
+            (
+                "utc-offset",
+                "2026-04-07T10:00:00+00:00",
+                "2026-04-07T10:00:00+00:00",
+            ),
+            (
+                "local-offset",
+                "2026-04-07T03:00:00-07:00",
+                "2026-04-07T10:00:00+00:00",
+            ),
+        ] {
+            let mut record = make_record(request_id, 42);
+            record.timestamp = source_timestamp
+                .parse::<DateTime<chrono::FixedOffset>>()
+                .unwrap()
+                .with_timezone(&Utc);
+            db.insert_records(&[record]).unwrap();
+
+            let stored: String = db
+                .conn()
+                .query_row(
+                    "SELECT timestamp FROM token_usage WHERE request_id = ?1",
+                    [request_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, expected_stored);
+        }
     }
 
     #[test]

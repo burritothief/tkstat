@@ -11,6 +11,7 @@ use serde_json::Value;
 use walkdir::WalkDir;
 
 use crate::domain::provider::ProviderId;
+use crate::domain::timestamp::format_utc_rfc3339;
 use crate::domain::usage::{ModelFamily, TokenRecord};
 use crate::ingest::ParsedFile;
 use crate::ingest::walker::SourceFile;
@@ -215,7 +216,7 @@ fn token_count_record(
     let request_id = format!(
         "{}:{}:{}:{}:{}:{}",
         session_id,
-        timestamp.to_rfc3339(),
+        format_utc_rfc3339(timestamp),
         usage.input_tokens,
         usage.cached_input_tokens,
         usage.output_tokens,
