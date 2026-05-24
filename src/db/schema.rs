@@ -6,7 +6,7 @@ use crate::domain::provider::ProviderId;
 use crate::domain::timestamp::parse_canonical_utc_rfc3339;
 use crate::domain::usage::{ModelFamily, TokenRecord};
 
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -28,11 +28,20 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
 
     match current {
         Some(v) if v >= SCHEMA_VERSION => {}
+        Some(v) if v >= 11 => {
+            eprintln!(
+                "tkstat database schema {v} is older than {SCHEMA_VERSION}; normalizing default Claude pricing modifier dimensions."
+            );
+            create_tables(&tx)?;
+            normalize_default_claude_billing_component_dimensions(&tx)?;
+            set_version(&tx, SCHEMA_VERSION)?;
+        }
         Some(v) if v >= 10 => {
             eprintln!(
                 "tkstat database schema {v} is older than {SCHEMA_VERSION}; adding pricing source metadata."
             );
             create_tables(&tx)?;
+            normalize_default_claude_billing_component_dimensions(&tx)?;
             set_version(&tx, SCHEMA_VERSION)?;
         }
         Some(v) if v >= 9 => {
@@ -42,6 +51,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
             migrate_provider_ids(&tx)?;
             migrate_pricing_dimensions(&tx)?;
             create_tables(&tx)?;
+            normalize_default_claude_billing_component_dimensions(&tx)?;
             set_version(&tx, SCHEMA_VERSION)?;
         }
         Some(v) if v >= 8 => {
@@ -52,6 +62,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
             migrate_pricing_dimensions(&tx)?;
             create_tables(&tx)?;
             backfill_usage_billing_components(&tx)?;
+            normalize_default_claude_billing_component_dimensions(&tx)?;
             set_version(&tx, SCHEMA_VERSION)?;
         }
         Some(v) => {
@@ -68,12 +79,14 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
             migrate_pricing_dimensions(&tx)?;
             create_tables(&tx)?;
             backfill_usage_billing_components(&tx)?;
+            normalize_default_claude_billing_component_dimensions(&tx)?;
             set_version(&tx, SCHEMA_VERSION)?;
         }
         None => {
             create_tables(&tx)?;
             migrate_provider_ids(&tx)?;
             backfill_usage_billing_components(&tx)?;
+            normalize_default_claude_billing_component_dimensions(&tx)?;
             set_version(&tx, SCHEMA_VERSION)?;
         }
     }
@@ -320,6 +333,25 @@ fn backfill_usage_billing_components(conn: &Connection) -> Result<()> {
     for (usage_id, record) in rows {
         insert_billing_components(&mut insert, usage_id, &record)?;
     }
+    Ok(())
+}
+
+fn normalize_default_claude_billing_component_dimensions(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "usage_billing_components")? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "UPDATE usage_billing_components
+            SET service_tier = NULL
+          WHERE provider = 'claude-code'
+            AND service_tier IS NOT NULL
+            AND lower(trim(service_tier)) = 'standard';
+         UPDATE usage_billing_components
+            SET speed = NULL
+          WHERE provider = 'claude-code'
+            AND speed IS NOT NULL
+            AND lower(trim(speed)) = 'standard';",
+    )?;
     Ok(())
 }
 
@@ -936,6 +968,88 @@ mod tests {
             .unwrap();
         assert!(indexes.contains(&"idx_billing_components_usage".to_string()));
         assert!(indexes.contains(&"idx_billing_components_lookup".to_string()));
+    }
+
+    #[test]
+    fn test_schema_v11_normalizes_default_claude_billing_component_modifiers() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (11);
+
+             CREATE TABLE usage_billing_components (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                usage_id            INTEGER NOT NULL,
+                provider            TEXT NOT NULL CHECK(provider IN ('claude-code', 'codex')),
+                request_id          TEXT NOT NULL CHECK(request_id <> ''),
+                model_id            TEXT NOT NULL CHECK(model_id <> ''),
+                timestamp           TEXT NOT NULL CHECK(timestamp <> ''),
+                token_category      TEXT NOT NULL CHECK(token_category <> ''),
+                tokens              INTEGER NOT NULL CHECK(tokens > 0),
+                service_tier        TEXT,
+                speed               TEXT,
+                region              TEXT,
+                processing_mode     TEXT,
+                source_detail       TEXT,
+                component_ordinal   INTEGER NOT NULL,
+                UNIQUE(provider, request_id, component_ordinal)
+             );
+
+             INSERT INTO usage_billing_components
+                (usage_id, provider, request_id, model_id, timestamp, token_category, tokens,
+                 service_tier, speed, region, processing_mode, source_detail, component_ordinal)
+             VALUES
+                (1, 'claude-code', 'standard', 'claude-haiku-4-5-20251001',
+                 '2026-04-07T10:00:00+00:00', 'cache_read', 100,
+                 'standard', 'standard', NULL, NULL, NULL, 0),
+                (2, 'claude-code', 'fast', 'claude-haiku-4-5-20251001',
+                 '2026-04-07T10:00:00+00:00', 'cache_read', 100,
+                 'standard', 'fast', NULL, NULL, NULL, 0),
+                (3, 'codex', 'codex-standard', 'gpt-5.4',
+                 '2026-04-07T10:00:00+00:00', 'input', 100,
+                 NULL, NULL, NULL, 'standard', NULL, 0);",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+
+        let standard: (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT service_tier, speed
+                 FROM usage_billing_components
+                 WHERE request_id = 'standard'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(standard, (None, None));
+
+        let fast: (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT service_tier, speed
+                 FROM usage_billing_components
+                 WHERE request_id = 'fast'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(fast, (None, Some("fast".into())));
+
+        let codex_mode: Option<String> = conn
+            .query_row(
+                "SELECT processing_mode
+                 FROM usage_billing_components
+                 WHERE request_id = 'codex-standard'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(codex_mode.as_deref(), Some("standard"));
     }
 
     #[test]

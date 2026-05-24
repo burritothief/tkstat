@@ -263,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn test_inserted_claude_billing_components_preserve_cache_ttl_and_modifiers() {
+    fn test_inserted_claude_billing_components_preserve_cache_ttl_and_non_default_modifiers() {
         let db = Database::open_in_memory().unwrap();
         let mut record = make_record("r1", 42);
         record.cache_creation_tokens = 150;
@@ -300,7 +300,7 @@ mod tests {
 
         assert_eq!(rows.len(), 5);
         assert!(rows.iter().all(|row| {
-            row.service_tier.as_deref() == Some("standard")
+            row.service_tier.is_none()
                 && row.speed.as_deref() == Some("fast")
                 && row.region.as_deref() == Some("us")
                 && row.processing_mode.is_none()
@@ -315,6 +315,50 @@ mod tests {
                 && row.tokens == 50
                 && row.source_detail.as_deref() == Some("ephemeral_1h")
         }));
+    }
+
+    #[test]
+    fn test_inserted_claude_standard_modifiers_use_default_pricing_dimensions() {
+        let db = Database::open_in_memory().unwrap();
+        let mut record = make_record("r1", 0);
+        record.model = ModelFamily::Haiku;
+        record.model_id = "claude-haiku-4-5-20251001".into();
+        record.input_tokens = 0;
+        record.output_tokens = 0;
+        record.cache_creation_tokens = 0;
+        record.cache_read_tokens = 1_000_000;
+        record.service_tier = Some("standard".into());
+        record.speed = Some("standard".into());
+        db.insert_records(&[record]).unwrap();
+
+        let row: ComponentRow = db
+            .conn()
+            .query_row(
+                "SELECT token_category, tokens, service_tier, speed, region, processing_mode, source_detail
+                 FROM usage_billing_components
+                 WHERE provider = 'claude-code' AND request_id = 'r1'",
+                [],
+                |row| {
+                    Ok(ComponentRow {
+                        category: row.get(0)?,
+                        tokens: row.get(1)?,
+                        service_tier: row.get(2)?,
+                        speed: row.get(3)?,
+                        region: row.get(4)?,
+                        processing_mode: row.get(5)?,
+                        source_detail: row.get(6)?,
+                    })
+                },
+            )
+            .unwrap();
+
+        assert_eq!(row.category, "cache_read");
+        assert_eq!(row.tokens, 1_000_000);
+        assert!(row.service_tier.is_none());
+        assert!(row.speed.is_none());
+        assert!(row.region.is_none());
+        assert!(row.processing_mode.is_none());
+        assert!(row.source_detail.is_none());
     }
 
     #[test]

@@ -521,6 +521,7 @@ pub fn applicable_interval_for_dimensions(
     timestamp: DateTime<Utc>,
     dimensions: &PricingDimensions,
 ) -> Result<PricingInterval> {
+    let dimensions = dimensions.clone().normalized_for_provider(provider);
     let mut stmt = conn.prepare(
         "SELECT provider, model_id, token_category, service_tier, speed, region, processing_mode,
                 source_detail, currency, rate_per_1m_tokens, effective_from, effective_to, source
@@ -559,13 +560,13 @@ pub fn applicable_interval_for_dimensions(
     match rows.len() {
         0 => bail!(
             "missing price for provider={provider}, model={model_id}, category={token_category}{}, timestamp={}",
-            dimension_suffix(dimensions),
+            dimension_suffix(&dimensions),
             format_utc_rfc3339(timestamp),
         ),
         1 => Ok(rows.into_iter().next().unwrap()),
         _ => bail!(
             "overlapping prices for provider={provider}, model={model_id}, category={token_category}{}, timestamp={}",
-            dimension_suffix(dimensions),
+            dimension_suffix(&dimensions),
             format_utc_rfc3339(timestamp),
         ),
     }
@@ -2282,6 +2283,22 @@ mod tests {
         .unwrap();
         assert_eq!(default.rate_per_1m_tokens, 10.0);
 
+        let standard_dimensions = PricingDimensions {
+            service_tier: Some("standard".into()),
+            speed: Some("standard".into()),
+            ..Default::default()
+        };
+        let standard = applicable_interval_for_dimensions(
+            db.conn(),
+            ProviderId::ClaudeCode,
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            "2026-04-07T10:00:00Z".parse().unwrap(),
+            &standard_dimensions,
+        )
+        .unwrap();
+        assert_eq!(standard.rate_per_1m_tokens, 10.0);
+
         let fast_dimensions = PricingDimensions {
             speed: Some("fast".into()),
             ..Default::default()
@@ -2313,6 +2330,86 @@ mod tests {
         .to_string();
         assert!(err.contains("missing price"));
         assert!(err.contains("speed=priority"));
+    }
+
+    #[test]
+    fn test_claude_standard_modifiers_use_default_pricing_dimensions() {
+        let db = Database::open_in_memory().unwrap();
+        insert_interval(
+            db.conn(),
+            &PricingInterval::usd(
+                ProviderId::ClaudeCode,
+                "claude-haiku-4-5-20251001",
+                TokenCategory::CacheRead,
+                0.1,
+                "2026-01-01T00:00:00Z".parse().unwrap(),
+                "test",
+            ),
+        )
+        .unwrap();
+
+        let mut usage = record("claude-haiku-4-5-20251001");
+        usage.model = ModelFamily::Haiku;
+        usage.input_tokens = 0;
+        usage.output_tokens = 0;
+        usage.cache_creation_tokens = 0;
+        usage.cache_read_tokens = 1_000_000;
+        usage.service_tier = Some("standard".into());
+        usage.speed = Some("standard".into());
+
+        let cost = calculate_record_cost(db.conn(), &usage).unwrap();
+        assert!((cost - 0.1).abs() < 0.000001);
+    }
+
+    #[test]
+    fn test_claude_non_default_speed_still_requires_specialized_pricing() {
+        let db = Database::open_in_memory().unwrap();
+        insert_interval(
+            db.conn(),
+            &PricingInterval::usd(
+                ProviderId::ClaudeCode,
+                "claude-haiku-4-5-20251001",
+                TokenCategory::CacheRead,
+                0.1,
+                "2026-01-01T00:00:00Z".parse().unwrap(),
+                "test",
+            ),
+        )
+        .unwrap();
+
+        let mut usage = record("claude-haiku-4-5-20251001");
+        usage.model = ModelFamily::Haiku;
+        usage.input_tokens = 0;
+        usage.output_tokens = 0;
+        usage.cache_creation_tokens = 0;
+        usage.cache_read_tokens = 1_000_000;
+        usage.service_tier = Some("standard".into());
+        usage.speed = Some("fast".into());
+
+        let err = calculate_record_cost(db.conn(), &usage)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("missing price"));
+        assert!(err.contains("speed=fast"));
+
+        insert_interval(
+            db.conn(),
+            &with_speed(
+                PricingInterval::usd(
+                    ProviderId::ClaudeCode,
+                    "claude-haiku-4-5-20251001",
+                    TokenCategory::CacheRead,
+                    0.2,
+                    "2026-01-01T00:00:00Z".parse().unwrap(),
+                    "test",
+                ),
+                "fast",
+            ),
+        )
+        .unwrap();
+
+        let cost = calculate_record_cost(db.conn(), &usage).unwrap();
+        assert!((cost - 0.2).abs() < 0.000001);
     }
 
     #[test]
