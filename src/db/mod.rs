@@ -1,12 +1,14 @@
 pub mod ingest;
+pub mod pricing;
 pub mod query;
 pub mod schema;
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use rusqlite::Connection;
 
+use crate::domain::pricing::PricingInterval;
 use crate::domain::usage::TokenRecord;
 
 /// File tracking state for incremental ingestion.
@@ -53,12 +55,29 @@ impl Database {
         ingest::batch_insert(&self.conn, records)
     }
 
-    pub fn get_file_state(&self, path: &Path) -> Result<Option<FileState>> {
+    pub fn insert_pricing_interval(&self, interval: &PricingInterval) -> Result<()> {
+        pricing::validate_interval(interval)?;
+        pricing::insert_interval(&self.conn, interval)
+    }
+
+    pub fn seed_pricing(&self) -> Result<usize> {
+        pricing::seed_pricing(&self.conn)
+    }
+
+    pub fn refresh_pricing(&self, fetcher: &dyn pricing::PricingFetcher) -> Result<usize> {
+        pricing::refresh_pricing(&self.conn, fetcher)
+    }
+
+    pub fn calculate_record_cost(&self, record: &TokenRecord) -> Result<f64> {
+        pricing::calculate_record_cost(&self.conn, record)
+    }
+
+    pub fn get_file_state(&self, provider: &str, path: &Path) -> Result<Option<FileState>> {
         let path_str = path.to_string_lossy();
         let mut stmt = self.conn.prepare_cached(
-            "SELECT size_bytes, mtime_secs, last_byte_offset FROM file_state WHERE path = ?1",
+            "SELECT size_bytes, mtime_secs, last_byte_offset FROM file_state WHERE provider = ?1 AND path = ?2",
         )?;
-        let mut rows = stmt.query_map([path_str.as_ref()], |row| {
+        let mut rows = stmt.query_map(rusqlite::params![provider, path_str.as_ref()], |row| {
             Ok(FileState {
                 size_bytes: row.get(0)?,
                 mtime_secs: row.get(1)?,
@@ -74,17 +93,21 @@ impl Database {
 
     pub fn update_file_state(
         &self,
+        provider: &str,
         path: &Path,
         size_bytes: u64,
         mtime_secs: i64,
-        last_byte_offset: i64,
+        last_byte_offset: u64,
     ) -> Result<()> {
+        let size_bytes = u64_to_sql_i64("size_bytes", size_bytes)?;
+        let last_byte_offset = u64_to_sql_i64("last_byte_offset", last_byte_offset)?;
         self.conn.execute(
-            "INSERT OR REPLACE INTO file_state (path, size_bytes, mtime_secs, last_byte_offset, last_ingested_at)
-             VALUES (?1, ?2, ?3, ?4, datetime('now'))",
+            "INSERT OR REPLACE INTO file_state (provider, path, size_bytes, mtime_secs, last_byte_offset, last_ingested_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
             rusqlite::params![
+                provider,
                 path.to_string_lossy().as_ref(),
-                size_bytes as i64,
+                size_bytes,
                 mtime_secs,
                 last_byte_offset,
             ],
@@ -97,6 +120,18 @@ impl Database {
             .execute_batch("DELETE FROM token_usage; DELETE FROM file_state;")?;
         Ok(())
     }
+}
+
+pub(crate) fn u64_to_sql_i64(field: &str, value: u64) -> Result<i64> {
+    i64::try_from(value)
+        .map_err(|_| anyhow::anyhow!("{field} value {value} exceeds SQLite INTEGER range"))
+}
+
+pub(crate) fn ensure_non_empty(field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        bail!("{field} must not be empty");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -118,9 +153,10 @@ mod tests {
     fn test_file_state_roundtrip() {
         let db = Database::open_in_memory().unwrap();
         let path = PathBuf::from("/test/file.jsonl");
-        assert!(db.get_file_state(&path).unwrap().is_none());
-        db.update_file_state(&path, 1024, 100000, 1024).unwrap();
-        let state = db.get_file_state(&path).unwrap().unwrap();
+        assert!(db.get_file_state("claude", &path).unwrap().is_none());
+        db.update_file_state("claude", &path, 1024, 100000, 1024)
+            .unwrap();
+        let state = db.get_file_state("claude", &path).unwrap().unwrap();
         assert_eq!(state.size_bytes, 1024);
         assert_eq!(state.mtime_secs, 100000);
     }
@@ -129,18 +165,119 @@ mod tests {
     fn test_file_state_update() {
         let db = Database::open_in_memory().unwrap();
         let path = PathBuf::from("/test/file.jsonl");
-        db.update_file_state(&path, 1024, 100000, 1024).unwrap();
-        db.update_file_state(&path, 2048, 200000, 2048).unwrap();
-        let state = db.get_file_state(&path).unwrap().unwrap();
+        db.update_file_state("claude", &path, 1024, 100000, 1024)
+            .unwrap();
+        db.update_file_state("claude", &path, 2048, 200000, 2048)
+            .unwrap();
+        let state = db.get_file_state("claude", &path).unwrap().unwrap();
         assert_eq!(state.size_bytes, 2048);
+    }
+
+    #[test]
+    fn test_file_state_provider_paths_do_not_collide() {
+        let db = Database::open_in_memory().unwrap();
+        let path = PathBuf::from("/test/shared.jsonl");
+        db.update_file_state("claude", &path, 1024, 100000, 1024)
+            .unwrap();
+        db.update_file_state("codex", &path, 2048, 200000, 2048)
+            .unwrap();
+
+        let claude = db.get_file_state("claude", &path).unwrap().unwrap();
+        let codex = db.get_file_state("codex", &path).unwrap().unwrap();
+        assert_eq!(claude.size_bytes, 1024);
+        assert_eq!(codex.size_bytes, 2048);
+    }
+
+    #[test]
+    fn test_file_state_rejects_values_above_sqlite_integer_range() {
+        let db = Database::open_in_memory().unwrap();
+        let path = PathBuf::from("/test/file.jsonl");
+        let err = db
+            .update_file_state("claude", &path, i64::MAX as u64 + 1, 100000, 1024)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("size_bytes"));
+        assert!(err.contains("exceeds SQLite INTEGER range"));
+
+        let err = db
+            .update_file_state("claude", &path, 1024, 100000, i64::MAX as u64 + 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("last_byte_offset"));
     }
 
     #[test]
     fn test_reset_clears_data() {
         let db = Database::open_in_memory().unwrap();
         let path = PathBuf::from("/test/file.jsonl");
-        db.update_file_state(&path, 1024, 100000, 1024).unwrap();
+        db.update_file_state("claude", &path, 1024, 100000, 1024)
+            .unwrap();
         db.reset().unwrap();
-        assert!(db.get_file_state(&path).unwrap().is_none());
+        assert!(db.get_file_state("claude", &path).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_reset_preserves_pricing_intervals() {
+        use crate::domain::pricing::{PricingInterval, TokenCategory};
+
+        let db = Database::open_in_memory().unwrap();
+        db.seed_pricing().unwrap();
+        let before: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM pricing_intervals", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(before > 0);
+
+        let interval = crate::db::pricing::applicable_interval(
+            db.conn(),
+            "codex",
+            "gpt-5.4",
+            TokenCategory::Input,
+            "2026-05-24T00:00:00Z".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(interval.model_id, "gpt-5.4");
+
+        db.reset().unwrap();
+        let after: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM pricing_intervals", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(after, before);
+
+        let selected = crate::db::pricing::applicable_interval(
+            db.conn(),
+            "codex",
+            "gpt-5.4",
+            TokenCategory::Input,
+            "2026-05-24T00:00:00Z".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(selected.rate_per_1m_tokens, interval.rate_per_1m_tokens);
+
+        let custom = PricingInterval::usd(
+            "codex",
+            "gpt-reset-check",
+            TokenCategory::Input,
+            1.0,
+            "2026-01-01T00:00:00Z".parse().unwrap(),
+            "test",
+        );
+        db.insert_pricing_interval(&custom).unwrap();
+        db.reset().unwrap();
+        assert!(
+            crate::db::pricing::applicable_interval(
+                db.conn(),
+                "codex",
+                "gpt-reset-check",
+                TokenCategory::Input,
+                "2026-05-24T00:00:00Z".parse().unwrap(),
+            )
+            .is_ok()
+        );
     }
 }

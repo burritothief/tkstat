@@ -32,6 +32,9 @@ Desktop.ini
 *.pem
 *.key
 
+# Local agent queue
+todos.md
+
 # Profiling / coverage
 perf.data
 perf.data.old

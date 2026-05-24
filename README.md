@@ -1,8 +1,8 @@
 # tkstat
 
-Terminal-based token usage monitor for Claude Code, inspired by [vnstat](https://github.com/vergoh/vnstat).
+A terminal-based token usage monitor for Claude Code and Codex, inspired by [vnstat](https://github.com/vergoh/vnstat).
 
-Claude Code writes session logs as JSONL files, but there's no built-in way to see how many tokens you're burning across days, weeks, or months. `tkstat` parses JSONL logs into a local SQLite database, then queries it.
+Claude Code and Codex write session logs as JSONL files, but there's no built-in way to see how many tokens you're burning across days, weeks, or months. `tkstat` parses JSONL logs into a local SQLite database, then queries it.
 
 ## Install
 
@@ -29,6 +29,10 @@ tkstat -t 10        # top 10 days by token volume
 tkstat -s           # short summary
 tkstat --heatmap    # GitHub-style contribution calendar
 tkstat --chart      # braille time-series chart
+tkstat --by-model   # usage grouped by exact model id
+tkstat --by-provider # usage grouped by provider
+tkstat --by-project # usage grouped by project
+tkstat --provider codex --by-model  # Codex usage by exact model id
 ```
 
 Daily:
@@ -94,12 +98,21 @@ $ tkstat -t 5
 ### Filters
 
 ```
-tkstat --model opus         # only opus usage
+tkstat --model opus         # only opus usage (family alias)
+tkstat --model claude-sonnet-4-5-20250929  # exact model id
+tkstat --model-family sonnet  # explicit family filter
+tkstat --by-model           # compare exact model ids
+tkstat --by-provider        # compare providers
+tkstat --by-project         # compare projects
 tkstat --model sonnet       # only sonnet usage
+tkstat --provider claude  # only Claude Code usage
+tkstat --provider codex        # only Codex usage
 tkstat -p myproject         # filter by project name (substring match)
 tkstat -b 2026-03-01 -e 2026-03-31   # date range
 tkstat --no-subagents       # exclude subagent usage
 ```
+
+Report buckets and `--begin`/`--end` date filters use UTC dates, regardless of the host machine's local timezone. This keeps daily/hourly output deterministic across machines and daylight-saving transitions.
 
 ### Column selection
 
@@ -110,9 +123,10 @@ Use `--columns` to pick exactly which columns to show:
 ```
 tkstat --columns cost,reqs,sessions
 tkstat --columns in,out,total,cost,reqs
+tkstat --provider codex --columns input,cached_input,output,reasoning_output,total,cost
 ```
 
-Available columns: `input` (`in`), `output` (`out`), `cache_rd` (`crd`), `cache_cr` (`ccr`), `total` (`tot`), `cost`, `reqs` (`req`), `sessions` (`sess`).
+Available columns: `input` (`in`), `output` (`out`), `cache_rd` (`crd`), `cache_cr` (`ccr`), `cached_input` (`cached`), `reasoning_output` (`reason`), `total` (`tot`), `cost`, `reqs` (`req`), `sessions` (`sess`).
 
 These map directly to fields in the [Anthropic Messages API usage object](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#tracking-cache-performance):
 
@@ -122,7 +136,9 @@ These map directly to fields in the [Anthropic Messages API usage object](https:
 | `output` | `output_tokens` | Tokens Claude generates — responses, code, tool calls, chain-of-thought. |
 | `cache rd` | `cache_read_input_tokens` | Input tokens served from Anthropic's [prompt cache](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching). 90% cheaper than regular input. This is the bulk of Claude Code token volume — the full conversation is resent each turn, but unchanged portions hit cache. |
 | `cache cr` | `cache_creation_input_tokens` | Input tokens written to cache for the first time. 25% more expensive than regular input. |
-| `total` | — | Sum of all four token types. |
+| `cached in` | `cached_input_tokens` | Codex/OpenAI input tokens served from prompt cache; this is a subset of `input_tokens`. |
+| `reason` | `reasoning_output_tokens` | Codex/OpenAI reasoning tokens; this is a subset of `output_tokens`. |
+| `total` | — | Display total. Claude Code sums input, output, cache read, and cache creation; Codex/OpenAI totals use input plus output so cached and reasoning subcategories are not double-counted. |
 | `cost` | — | Estimated cost in USD, calculated from token counts and [Anthropic's published pricing](https://docs.anthropic.com/en/docs/about-claude/models). |
 | `reqs` | — | Number of API requests. |
 | `sessions` | — | Number of distinct Claude Code sessions. |
@@ -132,13 +148,24 @@ These map directly to fields in the [Anthropic Messages API usage object](https:
 
 ```
 tkstat --json -d        # JSON array
+tkstat --csv -d         # CSV rows with raw numeric values for table-shaped reports
 tkstat --oneline        # semicolon-delimited single line
 tkstat -s               # short summary
 ```
 
+### Budget warnings
+
+```
+tkstat --daily-budget-usd 5.00
+tkstat --monthly-budget-usd 100.00 --provider codex
+tkstat --budget --daily-budget-usd 5.00 --monthly-budget-usd 100.00
+```
+
+Budget warnings are printed to stderr and use the active provider/model/project/date filters. Structured stdout formats such as JSON and CSV remain machine-readable.
+
 ## How it works
 
-Claude Code stores session logs at `~/.claude/projects/*/UUID.jsonl`. Each API response is a JSON line with a `usage` object containing token counts.
+Claude Code stores session logs under its projects directory. Codex stores session logs under its dated sessions directory. Each provider adapter normalizes its own token records into the local database.
 
 `tkstat` maintains a SQLite database (at `~/.local/share/tkstat/tkstat.db`) that caches parsed token records. On each run it checks which JSONL files have changed since the last read (by file size and mtime) and only parses the new bytes.
 
@@ -149,7 +176,29 @@ Use `--force-update` to wipe the database and re-ingest everything (e.g., after 
 ```
 tkstat --db /path/to/my.db      # custom database path
 tkstat --data-dir /path/to/logs # custom Claude log directory
+tkstat --provider all           # ingest/query all discoverable providers
+tkstat --provider codex         # ingest/query Codex only
+tkstat --pricing-seed           # install bundled offline pricing intervals
+tkstat --pricing-refresh        # refresh local pricing intervals
+tkstat --pricing-audit          # audit local pricing coverage
 tkstat --force-update           # full re-ingest
 ```
 
 The default database location is `~/.local/share/tkstat/tkstat.db`. You can also set the `TKSTAT_DB` environment variable.
+
+Schema v7 stores provider plus exact model identity for every usage row and uses a local effective-dated pricing catalog. Because `tkstat` is pre-1.0, upgrading from an older schema rebuilds the usage cache; run `tkstat --force-update` if you need to force a clean reingest.
+
+### Provider and pricing examples
+
+```
+tkstat --pricing-seed
+tkstat --provider claude -d
+tkstat --provider codex --by-model
+tkstat --provider all --by-model --json
+tkstat --pricing-refresh
+tkstat --pricing-audit --json
+```
+
+Cost-bearing reports fail closed when pricing coverage is missing. If you see an error naming a provider, model id, token category, and date range, run `tkstat --pricing-audit` to list all local pricing findings, then run `tkstat --pricing-seed` for bundled fallback pricing or `tkstat --pricing-refresh` to refresh the local catalog.
+
+`--force-update` clears cached usage rows and file offsets, but keeps locally cached pricing intervals. If pricing was never seeded or refreshed, run one of the pricing commands before cost-bearing reports.

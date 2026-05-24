@@ -3,12 +3,12 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 /// Resolve the Claude data directory.
-/// Priority: CLI flag > CLAUDE_CONFIG_DIR env > ~/.claude/projects
-pub fn resolve_data_dir(cli_override: Option<&str>) -> Result<PathBuf> {
+/// Priority: CLI flag > CLAUDE_CONFIG_DIR env > ~/.config/claude/projects > ~/.claude/projects
+pub fn resolve_data_dir(cli_override: Option<&str>) -> Result<Option<PathBuf>> {
     if let Some(dir) = cli_override {
         let p = PathBuf::from(dir);
         if p.is_dir() {
-            return Ok(p);
+            return Ok(Some(p));
         }
         anyhow::bail!("specified data dir does not exist: {dir}");
     }
@@ -16,25 +16,40 @@ pub fn resolve_data_dir(cli_override: Option<&str>) -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR") {
         let p = PathBuf::from(dir).join("projects");
         if p.is_dir() {
-            return Ok(p);
+            return Ok(Some(p));
         }
     }
 
     if let Some(config) = dirs::config_dir() {
         let p = config.join("claude").join("projects");
         if p.is_dir() {
-            return Ok(p);
+            return Ok(Some(p));
         }
     }
 
     if let Some(home) = dirs::home_dir() {
         let p = home.join(".claude").join("projects");
         if p.is_dir() {
-            return Ok(p);
+            return Ok(Some(p));
         }
     }
 
-    anyhow::bail!("no claude data directory found; expected ~/.claude/projects")
+    Ok(None)
+}
+
+/// Resolve the Codex home directory.
+/// Priority: CODEX_HOME env > ~/.codex
+pub fn resolve_codex_home() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("CODEX_HOME") {
+        let p = PathBuf::from(dir);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+
+    dirs::home_dir()
+        .map(|home| home.join(".codex"))
+        .filter(|p| p.is_dir())
 }
 
 /// Resolve the database path.
@@ -75,5 +90,10 @@ mod tests {
             resolve_db_path(Some("/tmp/my.db")),
             PathBuf::from("/tmp/my.db")
         );
+    }
+
+    #[test]
+    fn test_resolve_data_dir_missing_override_errors() {
+        assert!(resolve_data_dir(Some("/definitely/not/tkstat")).is_err());
     }
 }

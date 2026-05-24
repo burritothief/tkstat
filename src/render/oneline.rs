@@ -1,10 +1,11 @@
 use crate::domain::usage::{AggregatedRow, format_cost, format_tokens};
 
 /// Render a single-line summary, semicolon-delimited (like vnstat --oneline).
-/// Format: total_tokens;input;output;cache_rd;cache_cr;cost;requests;sessions
-pub fn render_oneline(summary: &AggregatedRow) -> String {
+/// Format: provider;total_tokens;input;output;cache_rd;cache_cr;cost;requests;sessions
+pub fn render_oneline(provider_label: &str, summary: &AggregatedRow) -> String {
     format!(
-        "{};{};{};{};{};{};{};{}\n",
+        "{};{};{};{};{};{};{};{};{}\n",
+        provider_label,
         format_tokens(summary.total_tokens),
         format_tokens(summary.input_tokens),
         format_tokens(summary.output_tokens),
@@ -33,9 +34,10 @@ mod tests {
             session_count: 1,
             ..Default::default()
         };
-        let line = render_oneline(&row);
+        let line = render_oneline("all providers", &row);
         assert!(line.ends_with('\n'));
         let parts: Vec<&str> = line.trim().split(';').collect();
-        assert_eq!(parts.len(), 8);
+        assert_eq!(parts.len(), 9);
+        assert_eq!(parts[0], "all providers");
     }
 }

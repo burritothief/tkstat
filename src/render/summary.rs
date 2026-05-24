@@ -1,16 +1,17 @@
 use crate::domain::usage::{AggregatedRow, format_cost, format_tokens};
 
 /// Render a short summary (like vnstat -s).
-pub fn render_summary(summary: &AggregatedRow) -> String {
+pub fn render_summary(provider_label: &str, summary: &AggregatedRow) -> String {
     format!(
         concat!(
-            " claude / summary\n",
+            " {provider_label} / summary\n",
             "\n",
             "   Requests: {requests:>10}    Sessions: {sessions:>10}\n",
             "     Input:  {input:>10}    Output:   {output:>10}\n",
             "   Cache rd: {cache_rd:>10}    Cache cr: {cache_cr:>10}\n",
             "     Total:  {total:>10}    Cost:     {cost:>10}\n",
         ),
+        provider_label = provider_label,
         requests = summary.request_count,
         sessions = summary.session_count,
         input = format_tokens(summary.input_tokens),
@@ -39,7 +40,8 @@ mod tests {
             session_count: 12,
             ..Default::default()
         };
-        let output = render_summary(&row);
+        let output = render_summary("codex", &row);
+        assert!(output.contains("codex / summary"));
         assert!(output.contains("150"));
         assert!(output.contains("$5.42"));
     }

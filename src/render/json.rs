@@ -31,4 +31,47 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.as_array().unwrap().len(), 0);
     }
+
+    #[test]
+    fn test_json_includes_model_group_metadata_when_present() {
+        let rows = vec![AggregatedRow {
+            period: "claude/claude-sonnet-4-5-20250929".into(),
+            provider: Some("claude".into()),
+            model_id: Some("claude-sonnet-4-5-20250929".into()),
+            request_count: 1,
+            ..Default::default()
+        }];
+        let json = render_json(&rows);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0]["provider"], "claude");
+        assert_eq!(parsed[0]["model_id"], "claude-sonnet-4-5-20250929");
+    }
+
+    #[test]
+    fn test_json_includes_provider_group_metadata_when_present() {
+        let rows = vec![AggregatedRow {
+            period: "codex".into(),
+            provider: Some("codex".into()),
+            request_count: 2,
+            ..Default::default()
+        }];
+        let json = render_json(&rows);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0]["period"], "codex");
+        assert_eq!(parsed[0]["provider"], "codex");
+    }
+
+    #[test]
+    fn test_json_includes_project_group_metadata_when_present() {
+        let rows = vec![AggregatedRow {
+            period: "my-project".into(),
+            project: Some("my-project".into()),
+            request_count: 2,
+            ..Default::default()
+        }];
+        let json = render_json(&rows);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0]["period"], "my-project");
+        assert_eq!(parsed[0]["project"], "my-project");
+    }
 }
