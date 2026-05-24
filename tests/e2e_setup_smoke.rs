@@ -93,7 +93,7 @@ fn test_recommended_setup_and_reset_command_sequence() {
     assert_no_pricing_coverage_error(&daily);
     let daily_stdout = String::from_utf8_lossy(&daily.stdout);
     assert!(daily_stdout.contains("all providers / daily"));
-    assert!(daily_stdout.contains("2026-05-24"));
+    assert!(daily_stdout.contains("2026-05-23"));
     assert!(daily_stdout.contains("$"));
 
     let by_model = run_tkstat(

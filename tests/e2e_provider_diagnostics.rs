@@ -356,6 +356,7 @@ fn test_filters_and_subagent_behavior_e2e() {
         base.into_iter().chain([
             "--json",
             "-d",
+            "--utc",
             "--begin",
             "2026-02-01",
             "--end",
@@ -392,6 +393,7 @@ fn test_filters_and_subagent_behavior_e2e() {
         base.into_iter().chain([
             "--json",
             "-d",
+            "--utc",
             "--begin",
             "2026-02-01",
             "--end",
@@ -406,6 +408,7 @@ fn test_filters_and_subagent_behavior_e2e() {
         base.into_iter().chain([
             "--json",
             "-d",
+            "--utc",
             "--begin",
             "2026-02-01",
             "--end",

@@ -30,6 +30,7 @@ export HOME="$tmp_root/home"
 export CLAUDE_CONFIG_DIR="$tmp_root/claude-config"
 export CODEX_HOME="$codex_home"
 export NO_COLOR=1
+export TZ="${TZ:-America/Los_Angeles}"
 
 cleanup() {
   if [[ "${KEEP_TMP:-0}" == "1" ]]; then
@@ -90,7 +91,7 @@ assert_contains "$by_provider" "codex"
 daily="$(run_capture "$bin" --provider all --db "$db" --data-dir "$claude_projects" -d --limit 200 --no-color)"
 assert_contains "$daily" "all providers / daily"
 assert_contains "$daily" "2026-01-31"
-assert_contains "$daily" "2026-05-24"
+assert_contains "$daily" "2026-05-23"
 
 by_model="$(run_capture "$bin" --provider all --db "$db" --data-dir "$claude_projects" --by-model --limit 50 --no-color)"
 assert_contains "$by_model" "claude-opus-4-5-20251101"
@@ -103,11 +104,11 @@ import json
 import os
 
 rows = json.loads(os.environ["JSON_DAILY"])
-assert any(row["period"] == "2026-05-24" and row["cost_usd"] > 0 for row in rows)
+assert any(row["period"] == "2026-05-23" and row["cost_usd"] > 0 for row in rows)
 assert any(row["period"] == "2026-01-31" and row["cost_usd"] > 0 for row in rows)
 PY
 else
-  assert_contains "$json_daily" '"period": "2026-05-24"'
+  assert_contains "$json_daily" '"period": "2026-05-23"'
   assert_contains "$json_daily" '"cost_usd"'
 fi
 
