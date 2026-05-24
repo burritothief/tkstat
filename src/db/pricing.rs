@@ -1364,14 +1364,16 @@ fn add_openai_model(
         (TokenCategory::Output, output),
         (TokenCategory::ReasoningOutput, output),
     ] {
-        intervals.push(PricingInterval::usd(
+        let mut interval = PricingInterval::usd(
             ProviderId::Codex,
             model_id,
             category,
             rate,
             effective_from,
             source,
-        ));
+        );
+        interval.dimensions.processing_mode = Some("standard".into());
+        intervals.push(interval);
     }
 }
 
@@ -1414,6 +1416,14 @@ mod tests {
         interval
     }
 
+    fn with_processing_mode(
+        mut interval: PricingInterval,
+        processing_mode: &str,
+    ) -> PricingInterval {
+        interval.dimensions.processing_mode = Some(processing_mode.into());
+        interval
+    }
+
     fn with_source_detail(mut interval: PricingInterval, source_detail: &str) -> PricingInterval {
         interval.dimensions.source_detail = Some(source_detail.into());
         interval
@@ -1439,6 +1449,7 @@ mod tests {
             service_tier: None,
             speed: None,
             region: None,
+            processing_mode: None,
             cost_usd: 0.0,
             project: "test".into(),
             source_file: "/test.jsonl".into(),
@@ -1756,6 +1767,44 @@ mod tests {
     }
 
     #[test]
+    fn test_calculate_codex_cost_uses_processing_mode_specific_price() {
+        let db = Database::open_in_memory().unwrap();
+        for (mode, rate) in [("standard", 10.0), ("batch", 5.0)] {
+            insert_interval(
+                db.conn(),
+                &with_processing_mode(
+                    PricingInterval::usd(
+                        ProviderId::Codex,
+                        "gpt-audit",
+                        TokenCategory::Input,
+                        rate,
+                        "2026-01-01T00:00:00Z".parse().unwrap(),
+                        "test",
+                    ),
+                    mode,
+                ),
+            )
+            .unwrap();
+        }
+
+        let mut usage = record("gpt-audit");
+        usage.provider = crate::domain::provider::ProviderId::Codex;
+        usage.model = ModelFamily::Unknown;
+        usage.output_tokens = 0;
+        usage.processing_mode = Some("batch".into());
+
+        let cost = calculate_record_cost(db.conn(), &usage).unwrap();
+        assert!((cost - 5.0).abs() < 0.000001);
+
+        usage.processing_mode = Some("priority".into());
+        let err = calculate_record_cost(db.conn(), &usage)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("missing price"));
+        assert!(err.contains("processing_mode=priority"));
+    }
+
+    #[test]
     fn test_calculate_claude_cost_requires_cache_creation_source_detail_prices() {
         let db = Database::open_in_memory().unwrap();
         for (category, rate) in [
@@ -1859,12 +1908,16 @@ mod tests {
         assert_eq!(legacy_count, 0);
         assert!(canonical_count > 0);
 
-        let selected = applicable_interval(
+        let selected = applicable_interval_for_dimensions(
             db.conn(),
             ProviderId::Codex,
             "gpt-5.4",
             TokenCategory::CachedInput,
             "2026-05-24T00:00:00Z".parse().unwrap(),
+            &PricingDimensions {
+                processing_mode: Some("standard".into()),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(selected.rate_per_1m_tokens, 0.25);

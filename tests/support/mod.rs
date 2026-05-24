@@ -379,6 +379,7 @@ pub fn audit_record(model_id: &str) -> TokenRecord {
         service_tier: None,
         speed: None,
         region: None,
+        processing_mode: None,
         cost_usd: 0.0,
         project: "audit".into(),
         source_file: "/audit.jsonl".into(),

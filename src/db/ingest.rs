@@ -113,6 +113,7 @@ mod tests {
             service_tier: None,
             speed: None,
             region: None,
+            processing_mode: None,
             cost_usd: 0.05,
             project: "test".into(),
             source_file: "/test.jsonl".into(),
@@ -127,6 +128,7 @@ mod tests {
         service_tier: Option<String>,
         speed: Option<String>,
         region: Option<String>,
+        processing_mode: Option<String>,
         source_detail: Option<String>,
     }
 
@@ -234,27 +236,28 @@ mod tests {
         record.cache_read_tokens = 0;
         record.cached_input_tokens = 40;
         record.reasoning_output_tokens = 7;
+        record.processing_mode = Some("batch".into());
         db.insert_records(&[record]).unwrap();
 
-        let rows: Vec<(String, i64)> = db
+        let rows: Vec<(String, i64, Option<String>)> = db
             .conn()
             .prepare(
-                "SELECT token_category, tokens
+                "SELECT token_category, tokens, processing_mode
                  FROM usage_billing_components
                  WHERE provider = 'codex' AND request_id = 'codex'
                  ORDER BY component_ordinal",
             )
             .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         assert_eq!(
             rows,
             vec![
-                ("input".into(), 60),
-                ("output".into(), 20),
-                ("cached_input".into(), 40),
+                ("input".into(), 60, Some("batch".into())),
+                ("output".into(), 20, Some("batch".into())),
+                ("cached_input".into(), 40, Some("batch".into())),
             ]
         );
     }
@@ -274,7 +277,7 @@ mod tests {
         let rows: Vec<ComponentRow> = db
             .conn()
             .prepare(
-                "SELECT token_category, tokens, service_tier, speed, region, source_detail
+                "SELECT token_category, tokens, service_tier, speed, region, processing_mode, source_detail
                  FROM usage_billing_components
                  WHERE provider = 'claude-code' AND request_id = 'r1'
                  ORDER BY component_ordinal",
@@ -287,7 +290,8 @@ mod tests {
                     service_tier: row.get(2)?,
                     speed: row.get(3)?,
                     region: row.get(4)?,
-                    source_detail: row.get(5)?,
+                    processing_mode: row.get(5)?,
+                    source_detail: row.get(6)?,
                 })
             })
             .unwrap()
@@ -299,6 +303,7 @@ mod tests {
             row.service_tier.as_deref() == Some("standard")
                 && row.speed.as_deref() == Some("fast")
                 && row.region.as_deref() == Some("us")
+                && row.processing_mode.is_none()
         }));
         assert!(rows.iter().any(|row| {
             row.category == "cache_creation"

@@ -1176,6 +1176,7 @@ mod tests {
             service_tier: None,
             speed: None,
             region: None,
+            processing_mode: None,
             cost_usd: (input as f64 * 15.0 + output as f64 * 75.0) / 1_000_000.0,
             project: project.into(),
             source_file: "/test.jsonl".into(),
@@ -1302,6 +1303,7 @@ mod tests {
         );
         codex.provider = crate::domain::provider::ProviderId::Codex;
         codex.model_id = "gpt-5.1-codex".into();
+        codex.processing_mode = Some("standard".into());
         db.insert_records(&[codex]).unwrap();
 
         let filter = QueryFilter {
@@ -1343,6 +1345,7 @@ mod tests {
         codex.provider = crate::domain::provider::ProviderId::Codex;
         codex.model_id = "gpt-5.5".into();
         codex.session_id = "shared-session".into();
+        codex.processing_mode = Some("standard".into());
         db.insert_records(&[claude, codex]).unwrap();
 
         let codex_summary = query_summary(
@@ -1394,6 +1397,7 @@ mod tests {
         codex.provider = crate::domain::provider::ProviderId::Codex;
         codex.model_id = "gpt-5.5".into();
         codex.session_id = "shared-session".into();
+        codex.processing_mode = Some("standard".into());
         db.insert_records(&[claude, codex]).unwrap();
 
         let rows = query_by_provider(
@@ -1463,6 +1467,7 @@ mod tests {
         );
         unknown.provider = crate::domain::provider::ProviderId::Codex;
         unknown.model_id = "gpt-5.5".into();
+        unknown.processing_mode = Some("standard".into());
         db.insert_records(&[unknown]).unwrap();
 
         let rows = query_by_project(

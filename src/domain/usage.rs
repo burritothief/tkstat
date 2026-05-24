@@ -77,6 +77,7 @@ pub struct TokenRecord {
     pub service_tier: Option<String>,
     pub speed: Option<String>,
     pub region: Option<String>,
+    pub processing_mode: Option<String>,
     pub cost_usd: f64,
     pub project: String,
     pub source_file: String,
