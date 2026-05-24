@@ -1,0 +1,22 @@
+{
+  "models": [
+    {
+      "model_ids": ["gpt-fixture-codex"],
+      "model_aliases": ["codex"],
+      "processing_mode": "standard",
+      "input": 2.5,
+      "cached_input": 0.25,
+      "output": 15.0,
+      "notes": "OpenAI fixture row for catalog updater tests."
+    },
+    {
+      "model_ids": ["gpt-fixture-codex-batch"],
+      "model_aliases": ["codex"],
+      "processing_mode": "batch",
+      "input": 1.25,
+      "cached_input": 0.125,
+      "output": 7.5,
+      "notes": "OpenAI fixture row for batch pricing dimension tests."
+    }
+  ]
+}

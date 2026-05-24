@@ -4,6 +4,7 @@ use rusqlite::{Connection, types::ValueRef};
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
 
 use crate::domain::pricing::{
     PricingDimensions, PricingInterval, TokenCategory, billable_token_categories_for_counts,
@@ -132,6 +133,16 @@ struct CatalogDimensions {
     source_detail: Option<String>,
 }
 
+struct StaticPricingFetcher {
+    intervals: Vec<PricingInterval>,
+}
+
+impl PricingFetcher for StaticPricingFetcher {
+    fn fetch_current_prices(&self) -> Result<Vec<PricingInterval>> {
+        Ok(self.intervals.clone())
+    }
+}
+
 fn audit_key<'a>(
     provider: &'a str,
     model_id: &'a str,
@@ -244,6 +255,16 @@ pub fn refresh_pricing(conn: &Connection, fetcher: &dyn PricingFetcher) -> Resul
     }
     tx.commit()?;
     Ok(changed)
+}
+
+pub fn import_pricing_catalog_file(conn: &Connection, path: &Path) -> Result<usize> {
+    let contents = std::fs::read_to_string(path)?;
+    import_pricing_catalog_json(conn, &contents)
+}
+
+pub fn import_pricing_catalog_json(conn: &Connection, contents: &str) -> Result<usize> {
+    let intervals = catalog_intervals_from_str(contents)?;
+    refresh_pricing(conn, &StaticPricingFetcher { intervals })
 }
 
 fn upsert_current_interval(conn: &Connection, interval: &PricingInterval) -> Result<usize> {
@@ -1310,7 +1331,11 @@ pub fn seed_intervals() -> Vec<PricingInterval> {
 }
 
 fn bundled_catalog_intervals() -> Result<Vec<PricingInterval>> {
-    let catalog: PricingCatalog = serde_json::from_str(BUNDLED_PRICING_CATALOG_JSON)?;
+    catalog_intervals_from_str(BUNDLED_PRICING_CATALOG_JSON)
+}
+
+fn catalog_intervals_from_str(contents: &str) -> Result<Vec<PricingInterval>> {
+    let catalog: PricingCatalog = serde_json::from_str(contents)?;
     validate_catalog(&catalog)?;
     catalog_to_intervals(&catalog)
 }
@@ -1612,6 +1637,40 @@ mod tests {
             rusqlite::params![model_id, effective_from, effective_to],
         )
         .unwrap();
+    }
+
+    fn single_input_catalog(rate: f64, effective_from: &str) -> String {
+        format!(
+            r#"{{
+  "schema_version": 1,
+  "notes": "offline pricing snapshot test catalog",
+  "sources": [
+    {{
+      "id": "test-source",
+      "url": "https://example.com/pricing",
+      "retrieved_at": "2026-05-23",
+      "notes": "test source"
+    }}
+  ],
+  "entries": [
+    {{
+      "provider": "claude-code",
+      "model_ids": ["claude-opus-4-6"],
+      "model_aliases": ["opus"],
+      "currency": "USD",
+      "effective_from": "{effective_from}",
+      "effective_to": null,
+      "source": "seed:test-source",
+      "source_ref": "test-source",
+      "dimensions": {{}},
+      "rates_per_1m_tokens": {{
+        "input": {rate}
+      }},
+      "notes": "test entry"
+    }}
+  ]
+}}"#
+        )
     }
 
     #[test]
@@ -2097,6 +2156,51 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_import_pricing_catalog_closes_changed_open_interval() {
+        let db = Database::open_in_memory().unwrap();
+        assert_eq!(
+            import_pricing_catalog_json(
+                db.conn(),
+                &single_input_catalog(10.0, "2026-01-01T00:00:00+00:00"),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            import_pricing_catalog_json(
+                db.conn(),
+                &single_input_catalog(12.0, "2026-03-01T00:00:00+00:00"),
+            )
+            .unwrap(),
+            2
+        );
+
+        let old = applicable_interval(
+            db.conn(),
+            ProviderId::ClaudeCode,
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            "2026-02-01T00:00:00Z".parse().unwrap(),
+        )
+        .unwrap();
+        let new = applicable_interval(
+            db.conn(),
+            ProviderId::ClaudeCode,
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            "2026-04-01T00:00:00Z".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(old.rate_per_1m_tokens, 10.0);
+        assert_eq!(
+            old.effective_to,
+            Some("2026-03-01T00:00:00Z".parse().unwrap())
+        );
+        assert_eq!(new.rate_per_1m_tokens, 12.0);
+        assert_eq!(new.effective_to, None);
     }
 
     #[test]
