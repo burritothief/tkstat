@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "notes": "Bundled offline pricing snapshot used by tkstat --pricing-seed and --pricing-refresh. Review official provider pricing before relying on historical or newly announced models.",
+  "sources": [
+    {
+      "id": "anthropic-claude-pricing-2026-05-23",
+      "url": "https://www.anthropic.com/pricing",
+      "retrieved_at": "2026-05-23",
+      "notes": "Manual snapshot of Claude model input/output prices and prompt-cache multipliers. Cache creation is represented as 1.25x input; cache read is represented as 0.10x input."
+    },
+    {
+      "id": "openai-gpt-5-4-pricing-2026-05-23",
+      "url": "https://openai.com/api/pricing/",
+      "retrieved_at": "2026-05-23",
+      "notes": "Manual snapshot of OpenAI-style input, cached input, and output prices used for observed Codex model ids. Reasoning output is tracked as output-priced policy metadata."
+    }
+  ],
+  "entries": [
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-opus-4-5",
+        "claude-opus-4-5-20251101",
+        "claude-opus-4-5-20250929"
+      ],
+      "model_aliases": ["opus"],
+      "currency": "USD",
+      "effective_from": "2026-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-05-23",
+      "source_ref": "anthropic-claude-pricing-2026-05-23",
+      "dimensions": {},
+      "rates_per_1m_tokens": {
+        "input": 5.0,
+        "output": 25.0,
+        "cache_creation": 6.25,
+        "cache_read": 0.5
+      },
+      "notes": "Claude Opus-family bundled fallback prices."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-sonnet-4-5-20250929"
+      ],
+      "model_aliases": ["sonnet"],
+      "currency": "USD",
+      "effective_from": "2026-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-05-23",
+      "source_ref": "anthropic-claude-pricing-2026-05-23",
+      "dimensions": {},
+      "rates_per_1m_tokens": {
+        "input": 3.0,
+        "output": 15.0,
+        "cache_creation": 3.75,
+        "cache_read": 0.3
+      },
+      "notes": "Claude Sonnet-family bundled fallback prices."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-haiku-4-6",
+        "claude-haiku-4-5",
+        "claude-haiku-4-5-20251001"
+      ],
+      "model_aliases": ["haiku"],
+      "currency": "USD",
+      "effective_from": "2026-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-05-23",
+      "source_ref": "anthropic-claude-pricing-2026-05-23",
+      "dimensions": {},
+      "rates_per_1m_tokens": {
+        "input": 1.0,
+        "output": 5.0,
+        "cache_creation": 1.25,
+        "cache_read": 0.1
+      },
+      "notes": "Claude Haiku-family bundled fallback prices."
+    },
+    {
+      "provider": "codex",
+      "model_ids": [
+        "gpt-5.1-codex",
+        "gpt-5.4",
+        "gpt-5.5"
+      ],
+      "model_aliases": ["codex"],
+      "currency": "USD",
+      "effective_from": "2026-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:openai-gpt-5-4-pricing-2026-05-23",
+      "source_ref": "openai-gpt-5-4-pricing-2026-05-23",
+      "dimensions": {
+        "processing_mode": "standard"
+      },
+      "rates_per_1m_tokens": {
+        "input": 2.5,
+        "cached_input": 0.25,
+        "output": 15.0,
+        "reasoning_output": 15.0
+      },
+      "notes": "Observed Codex model ids default to standard OpenAI processing mode unless logs record a different processing mode."
+    }
+  ]
+}

@@ -1,8 +1,9 @@
 use anyhow::{Result, anyhow, bail};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{Connection, types::ValueRef};
+use serde::Deserialize;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::domain::pricing::{
     PricingDimensions, PricingInterval, TokenCategory, billable_token_categories_for_counts,
@@ -11,6 +12,8 @@ use crate::domain::pricing::{
 use crate::domain::provider::ProviderId;
 use crate::domain::timestamp::{format_utc_rfc3339, parse_canonical_utc_rfc3339};
 use crate::domain::usage::TokenRecord;
+
+const BUNDLED_PRICING_CATALOG_JSON: &str = include_str!("../../pricing/catalog.json");
 
 pub trait PricingFetcher {
     fn fetch_current_prices(&self) -> Result<Vec<PricingInterval>>;
@@ -85,6 +88,48 @@ struct RawPricingInterval {
     effective_from: String,
     effective_to: Option<String>,
     source: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PricingCatalog {
+    schema_version: u32,
+    notes: String,
+    sources: Vec<CatalogSource>,
+    entries: Vec<CatalogEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogSource {
+    id: String,
+    url: String,
+    retrieved_at: String,
+    notes: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogEntry {
+    provider: String,
+    model_ids: Vec<String>,
+    #[serde(default)]
+    model_aliases: Vec<String>,
+    currency: String,
+    effective_from: String,
+    effective_to: Option<String>,
+    source: String,
+    source_ref: String,
+    #[serde(default)]
+    dimensions: CatalogDimensions,
+    rates_per_1m_tokens: BTreeMap<String, f64>,
+    notes: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct CatalogDimensions {
+    service_tier: Option<String>,
+    speed: Option<String>,
+    region: Option<String>,
+    processing_mode: Option<String>,
+    source_detail: Option<String>,
 }
 
 fn audit_key<'a>(
@@ -1261,119 +1306,191 @@ pub fn validate_interval(interval: &PricingInterval) -> Result<()> {
 }
 
 pub fn seed_intervals() -> Vec<PricingInterval> {
-    let effective_from = "2026-01-01T00:00:00Z".parse().unwrap();
+    bundled_catalog_intervals().expect("bundled pricing catalog should be valid")
+}
+
+fn bundled_catalog_intervals() -> Result<Vec<PricingInterval>> {
+    let catalog: PricingCatalog = serde_json::from_str(BUNDLED_PRICING_CATALOG_JSON)?;
+    validate_catalog(&catalog)?;
+    catalog_to_intervals(&catalog)
+}
+
+fn validate_catalog(catalog: &PricingCatalog) -> Result<()> {
+    if catalog.schema_version != 1 {
+        bail!(
+            "unsupported pricing catalog schema_version {}; expected 1",
+            catalog.schema_version
+        );
+    }
+    if catalog.notes.trim().is_empty() {
+        bail!("pricing catalog notes must not be empty");
+    }
+    if catalog.sources.is_empty() {
+        bail!("pricing catalog must contain at least one source");
+    }
+    if catalog.entries.is_empty() {
+        bail!("pricing catalog must contain at least one entry");
+    }
+
+    let mut source_ids = HashSet::new();
+    for source in &catalog.sources {
+        if source.id.trim().is_empty() {
+            bail!("pricing catalog source id must not be empty");
+        }
+        if !source_ids.insert(source.id.as_str()) {
+            bail!("duplicate pricing catalog source id {}", source.id);
+        }
+        if !source.url.starts_with("https://") {
+            bail!("pricing catalog source {} must use an https URL", source.id);
+        }
+        NaiveDate::parse_from_str(&source.retrieved_at, "%Y-%m-%d").map_err(|err| {
+            anyhow!(
+                "pricing catalog source {} has invalid retrieved_at date: {err}",
+                source.id
+            )
+        })?;
+        if source.notes.trim().is_empty() {
+            bail!(
+                "pricing catalog source {} notes must not be empty",
+                source.id
+            );
+        }
+    }
+
+    let mut interval_keys = HashSet::new();
+    for entry in &catalog.entries {
+        validate_catalog_entry(entry, &source_ids)?;
+        let provider = ProviderId::from_canonical(&entry.provider)
+            .ok_or_else(|| anyhow!("unsupported provider id {}", entry.provider))?;
+        let dimensions = entry.dimensions.pricing_dimensions();
+        let effective_from = parse_canonical_utc_rfc3339(&entry.effective_from)?;
+        let effective_to = entry
+            .effective_to
+            .as_ref()
+            .map(|dt| parse_canonical_utc_rfc3339(dt))
+            .transpose()?;
+        for model_id in &entry.model_ids {
+            for (category, rate) in &entry.rates_per_1m_tokens {
+                let token_category = category.parse::<TokenCategory>().map_err(|err| {
+                    anyhow!("pricing catalog entry uses invalid token category {category}: {err}")
+                })?;
+                let interval = PricingInterval {
+                    provider,
+                    model_id: model_id.clone(),
+                    token_category,
+                    dimensions: dimensions.clone(),
+                    currency: entry.currency.clone(),
+                    rate_per_1m_tokens: *rate,
+                    effective_from,
+                    effective_to,
+                    source: entry.source.clone(),
+                };
+                validate_interval(&interval)?;
+                let key = (
+                    provider.as_str().to_string(),
+                    model_id.clone(),
+                    token_category,
+                    dimensions.clone(),
+                    entry.currency.clone(),
+                    format_utc_rfc3339(effective_from),
+                );
+                if !interval_keys.insert(key) {
+                    bail!(
+                        "duplicate pricing catalog interval for provider={}, model={}, category={}, effective_from={}",
+                        provider,
+                        model_id,
+                        token_category,
+                        format_utc_rfc3339(effective_from)
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_catalog_entry(entry: &CatalogEntry, source_ids: &HashSet<&str>) -> Result<()> {
+    if entry.model_ids.is_empty() {
+        bail!(
+            "pricing catalog entry for provider {} has no model_ids",
+            entry.provider
+        );
+    }
+    if entry.rates_per_1m_tokens.is_empty() {
+        bail!(
+            "pricing catalog entry for provider {} has no rates_per_1m_tokens",
+            entry.provider
+        );
+    }
+    if entry.source.trim().is_empty() {
+        bail!("pricing catalog entry source must not be empty");
+    }
+    if !source_ids.contains(entry.source_ref.as_str()) {
+        bail!(
+            "pricing catalog entry source_ref {} does not match a source",
+            entry.source_ref
+        );
+    }
+    if entry.notes.trim().is_empty() {
+        bail!("pricing catalog entry notes must not be empty");
+    }
+    for model_id in &entry.model_ids {
+        if model_id.trim().is_empty() {
+            bail!("pricing catalog entry contains an empty model_id");
+        }
+    }
+    for alias in &entry.model_aliases {
+        if alias.trim().is_empty() {
+            bail!("pricing catalog entry contains an empty model alias");
+        }
+    }
+    Ok(())
+}
+
+fn catalog_to_intervals(catalog: &PricingCatalog) -> Result<Vec<PricingInterval>> {
     let mut intervals = Vec::new();
-
-    for model_id in [
-        "claude-opus-4-7",
-        "claude-opus-4-6",
-        "claude-opus-4-5",
-        "claude-opus-4-5-20251101",
-        "claude-opus-4-5-20250929",
-    ] {
-        add_anthropic_model(
-            &mut intervals,
-            model_id,
-            5.0,
-            25.0,
-            effective_from,
-            "seed:anthropic-claude-pricing-2026-05-23",
-        );
+    for entry in &catalog.entries {
+        let provider = ProviderId::from_canonical(&entry.provider)
+            .ok_or_else(|| anyhow!("unsupported provider id {}", entry.provider))?;
+        let dimensions = entry.dimensions.pricing_dimensions();
+        let effective_from = parse_canonical_utc_rfc3339(&entry.effective_from)?;
+        let effective_to = entry
+            .effective_to
+            .as_ref()
+            .map(|dt| parse_canonical_utc_rfc3339(dt))
+            .transpose()?;
+        for model_id in &entry.model_ids {
+            for (category, rate) in &entry.rates_per_1m_tokens {
+                intervals.push(PricingInterval {
+                    provider,
+                    model_id: model_id.clone(),
+                    token_category: category.parse().map_err(|err| {
+                        anyhow!(
+                            "pricing catalog entry uses invalid token category {category}: {err}"
+                        )
+                    })?,
+                    dimensions: dimensions.clone(),
+                    currency: entry.currency.clone(),
+                    rate_per_1m_tokens: *rate,
+                    effective_from,
+                    effective_to,
+                    source: entry.source.clone(),
+                });
+            }
+        }
     }
-    for model_id in [
-        "claude-sonnet-4-6",
-        "claude-sonnet-4-5",
-        "claude-sonnet-4-5-20250929",
-    ] {
-        add_anthropic_model(
-            &mut intervals,
-            model_id,
-            3.0,
-            15.0,
-            effective_from,
-            "seed:anthropic-claude-pricing-2026-05-23",
-        );
-    }
-    for model_id in [
-        "claude-haiku-4-6",
-        "claude-haiku-4-5",
-        "claude-haiku-4-5-20251001",
-    ] {
-        add_anthropic_model(
-            &mut intervals,
-            model_id,
-            1.0,
-            5.0,
-            effective_from,
-            "seed:anthropic-claude-pricing-2026-05-23",
-        );
-    }
-
-    for model_id in ["gpt-5.1-codex", "gpt-5.4", "gpt-5.5"] {
-        add_openai_model(
-            &mut intervals,
-            model_id,
-            2.50,
-            0.25,
-            15.0,
-            effective_from,
-            "seed:openai-gpt-5-4-pricing-2026-05-23",
-        );
-    }
-
-    intervals
+    Ok(intervals)
 }
 
-fn add_anthropic_model(
-    intervals: &mut Vec<PricingInterval>,
-    model_id: &str,
-    input: f64,
-    output: f64,
-    effective_from: DateTime<Utc>,
-    source: &str,
-) {
-    for (category, rate) in [
-        (TokenCategory::Input, input),
-        (TokenCategory::Output, output),
-        (TokenCategory::CacheCreation, input * 1.25),
-        (TokenCategory::CacheRead, input * 0.10),
-    ] {
-        intervals.push(PricingInterval::usd(
-            ProviderId::ClaudeCode,
-            model_id,
-            category,
-            rate,
-            effective_from,
-            source,
-        ));
-    }
-}
-
-fn add_openai_model(
-    intervals: &mut Vec<PricingInterval>,
-    model_id: &str,
-    input: f64,
-    cached_input: f64,
-    output: f64,
-    effective_from: DateTime<Utc>,
-    source: &str,
-) {
-    for (category, rate) in [
-        (TokenCategory::Input, input),
-        (TokenCategory::CachedInput, cached_input),
-        (TokenCategory::Output, output),
-        (TokenCategory::ReasoningOutput, output),
-    ] {
-        let mut interval = PricingInterval::usd(
-            ProviderId::Codex,
-            model_id,
-            category,
-            rate,
-            effective_from,
-            source,
-        );
-        interval.dimensions.processing_mode = Some("standard".into());
-        intervals.push(interval);
+impl CatalogDimensions {
+    fn pricing_dimensions(&self) -> PricingDimensions {
+        PricingDimensions {
+            service_tier: self.service_tier.clone(),
+            speed: self.speed.clone(),
+            region: self.region.clone(),
+            processing_mode: self.processing_mode.clone(),
+            source_detail: self.source_detail.clone(),
+        }
     }
 }
 
@@ -1922,6 +2039,44 @@ mod tests {
         .unwrap();
         assert_eq!(selected.rate_per_1m_tokens, 0.25);
         assert!(selected.source.starts_with("seed:"));
+    }
+
+    #[test]
+    fn test_bundled_pricing_catalog_schema_is_valid() {
+        let catalog: PricingCatalog = serde_json::from_str(BUNDLED_PRICING_CATALOG_JSON).unwrap();
+        validate_catalog(&catalog).unwrap();
+
+        assert_eq!(catalog.schema_version, 1);
+        assert!(catalog.notes.contains("offline pricing snapshot"));
+        assert!(catalog.sources.iter().all(|source| {
+            source.url.starts_with("https://")
+                && !source.retrieved_at.is_empty()
+                && !source.notes.is_empty()
+        }));
+        assert!(catalog.entries.iter().any(|entry| {
+            entry.provider == "codex"
+                && entry.dimensions.processing_mode.as_deref() == Some("standard")
+                && entry.rates_per_1m_tokens.contains_key("cached_input")
+        }));
+    }
+
+    #[test]
+    fn test_bundled_pricing_catalog_intervals_insert_and_audit_cleanly() {
+        let intervals = bundled_catalog_intervals().unwrap();
+        assert_eq!(intervals.len(), 56);
+
+        let db = Database::open_in_memory().unwrap();
+        assert_eq!(seed_pricing_intervals(db.conn(), &intervals).unwrap(), 56);
+        let findings = audit_pricing(db.conn()).unwrap();
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn test_pricing_catalog_docs_explain_snapshot_sources() {
+        let docs = include_str!("../../docs/pricing-catalog.md");
+        assert!(docs.contains("pricing/catalog.json"));
+        assert!(docs.contains("snapshot of official provider"));
+        assert!(docs.contains("effective-dated SQLite"));
     }
 
     #[test]
