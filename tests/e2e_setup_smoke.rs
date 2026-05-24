@@ -134,33 +134,6 @@ fn test_recommended_setup_and_reset_command_sequence() {
 }
 
 #[test]
-fn test_e2e_smoke_script_runs_with_compiled_binary() {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/e2e_smoke.sh");
-    let output = Command::new("bash")
-        .arg(script)
-        .env("TKSTAT_BIN", env!("CARGO_BIN_EXE_tkstat"))
-        .env("KEEP_TMP", "0")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stdout.contains("tkstat e2e smoke passed"));
-    assert!(stderr.contains("--pricing-seed"));
-    assert!(stderr.contains("--by-provider"));
-    assert!(!stdout.contains("/.claude"));
-    assert!(!stderr.contains("/.claude"));
-    assert!(!stdout.contains("/.codex"));
-    assert!(!stderr.contains("/.codex"));
-}
-
-#[test]
 fn test_release_gate_builds_cli_ingests_temp_db_and_prints_table() {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/e2e_smoke.sh");
     let output = Command::new("bash")

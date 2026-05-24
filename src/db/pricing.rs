@@ -3027,12 +3027,46 @@ mod tests {
     #[test]
     fn test_bundled_pricing_catalog_intervals_insert_and_audit_cleanly() {
         let intervals = bundled_catalog_intervals().unwrap();
-        assert_eq!(intervals.len(), 56);
+        assert_eq!(intervals.len(), 78);
 
         let db = Database::open_in_memory().unwrap();
-        assert_eq!(seed_pricing_intervals(db.conn(), &intervals).unwrap(), 56);
+        assert_eq!(seed_pricing_intervals(db.conn(), &intervals).unwrap(), 78);
         let findings = audit_pricing(db.conn()).unwrap();
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn test_bundled_pricing_covers_claude_cache_creation_ttl_dimensions() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_pricing().unwrap();
+
+        let five_minute = applicable_interval_for_dimensions(
+            db.conn(),
+            ProviderId::ClaudeCode,
+            "claude-sonnet-4-5-20250929",
+            TokenCategory::CacheCreation,
+            "2026-01-31T21:37:42.435Z".parse().unwrap(),
+            &PricingDimensions {
+                source_detail: Some("ephemeral_5m".into()),
+                ..Default::default()
+            },
+        )
+        .expect("seeded Claude pricing should cover 5-minute cache creation writes");
+        assert_eq!(five_minute.rate_per_1m_tokens, 3.75);
+
+        let one_hour = applicable_interval_for_dimensions(
+            db.conn(),
+            ProviderId::ClaudeCode,
+            "claude-sonnet-4-5-20250929",
+            TokenCategory::CacheCreation,
+            "2026-01-31T21:37:42.435Z".parse().unwrap(),
+            &PricingDimensions {
+                source_detail: Some("ephemeral_1h".into()),
+                ..Default::default()
+            },
+        )
+        .expect("seeded Claude pricing should cover 1-hour cache creation writes");
+        assert_eq!(one_hour.rate_per_1m_tokens, 6.0);
     }
 
     #[test]
