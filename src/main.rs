@@ -106,6 +106,8 @@ fn main() -> Result<()> {
         None => columns::default_columns(),
     };
     let table_columns_require_cost = columns_require_cost(&columns);
+    let budget_warnings_require_cost =
+        cli.daily_budget_usd.is_some() || cli.monthly_budget_usd.is_some();
 
     let provider_label = cli.provider_label();
     let filter = cli.query_filter();
@@ -123,7 +125,7 @@ fn main() -> Result<()> {
             let daily = db::query::query_daily_totals_with_cost_requirement(
                 database.conn(),
                 &filter,
-                matches!(cli.chart_metric, ChartMetric::Cost),
+                matches!(cli.chart_metric, ChartMetric::Cost) || budget_warnings_require_cost,
             )?;
             let metric = cli.chart_metric;
             let chart_data: Vec<(String, f64)> = daily
@@ -175,7 +177,7 @@ fn main() -> Result<()> {
                 database.conn(),
                 &filter,
                 cli.effective_limit(),
-                cli.json || table_columns_require_cost,
+                cli.json || table_columns_require_cost || budget_warnings_require_cost,
             )?;
             if cli.csv {
                 render::csv::render_csv(&rows, &columns)
@@ -196,7 +198,7 @@ fn main() -> Result<()> {
                 database.conn(),
                 &filter,
                 cli.effective_limit(),
-                cli.json || table_columns_require_cost,
+                cli.json || table_columns_require_cost || budget_warnings_require_cost,
             )?;
             if cli.csv {
                 render::csv::render_csv(&rows, &columns)
@@ -217,7 +219,7 @@ fn main() -> Result<()> {
                 database.conn(),
                 &filter,
                 cli.effective_limit(),
-                cli.json || table_columns_require_cost,
+                cli.json || table_columns_require_cost || budget_warnings_require_cost,
             )?;
             if cli.csv {
                 render::csv::render_csv(&rows, &columns)
@@ -238,7 +240,7 @@ fn main() -> Result<()> {
                 database.conn(),
                 &filter,
                 cli.effective_limit(),
-                cli.json || table_columns_require_cost,
+                cli.json || table_columns_require_cost || budget_warnings_require_cost,
             )?;
             if cli.csv {
                 render::csv::render_csv(&with_provider_label(rows, provider_label), &columns)
@@ -260,7 +262,7 @@ fn main() -> Result<()> {
                 period,
                 &filter,
                 cli.effective_limit(),
-                table_columns_require_cost,
+                table_columns_require_cost || budget_warnings_require_cost,
             )?;
             if cli.csv {
                 render::csv::render_csv(&with_provider_label(rows, provider_label), &columns)
@@ -547,7 +549,7 @@ mod tests {
         let db = db::Database::open_in_memory().unwrap();
         let report = ingest::IngestReport {
             providers: vec![ingest::ProviderIngestReport {
-                provider: "claude",
+                provider: "claude-code",
                 path: Some(PathBuf::from("/missing")),
                 status: ingest::ProviderIngestStatus::Missing,
                 discovered_files: 0,

@@ -84,7 +84,7 @@ mod tests {
 
     fn make_record(request_id: &str, output_tokens: u64) -> TokenRecord {
         TokenRecord {
-            provider: "claude".into(),
+            provider: "claude-code".into(),
             request_id: request_id.into(),
             session_id: "sess1".into(),
             uuid: "uuid1".into(),
@@ -145,7 +145,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
-        assert_eq!(provider, "claude");
+        assert_eq!(provider, "claude-code");
         assert_eq!(model_id, "claude-opus-4-6");
         assert_eq!(output, 42);
         assert!((cost - 0.05).abs() < 0.001);

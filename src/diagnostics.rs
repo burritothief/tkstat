@@ -426,9 +426,9 @@ mod tests {
 
         let db = Database::open_in_memory().unwrap();
         db.seed_pricing().unwrap();
-        db.insert_records(&[record("claude", "req-1", "claude-sonnet-4-5-20250929")])
+        db.insert_records(&[record("claude-code", "req-1", "claude-sonnet-4-5-20250929")])
             .unwrap();
-        db.update_file_state("claude", &path, 3, 1, 3).unwrap();
+        db.update_file_state("claude-code", &path, 3, 1, 3).unwrap();
 
         let inventory = gather_inventory(
             root.join("tkstat.db"),
@@ -438,7 +438,7 @@ mod tests {
         let claude = inventory
             .providers
             .iter()
-            .find(|provider| provider.provider == "claude")
+            .find(|provider| provider.provider == "claude-code")
             .unwrap();
         assert_eq!(claude.status, SourceStatus::Available);
         assert_eq!(claude.discovered_files, Some(1));
@@ -446,14 +446,14 @@ mod tests {
         assert_eq!(
             inventory.usage.by_provider,
             vec![ProviderUsageInventory {
-                provider: "claude".into(),
+                provider: "claude-code".into(),
                 rows: 1
             }]
         );
         assert_eq!(
             inventory.file_state.by_provider,
             vec![ProviderFileStateInventory {
-                provider: "claude".into(),
+                provider: "claude-code".into(),
                 files: 1
             }]
         );
@@ -466,7 +466,7 @@ mod tests {
     fn test_inventory_reports_multi_provider_usage_and_model_counts() {
         let db = Database::open_in_memory().unwrap();
         db.insert_records(&[
-            record("claude", "req-1", "claude-opus-4-6"),
+            record("claude-code", "req-1", "claude-opus-4-6"),
             record("codex", "req-2", "gpt-5.5"),
         ])
         .unwrap();
@@ -478,7 +478,7 @@ mod tests {
             inventory.usage.by_provider,
             vec![
                 ProviderUsageInventory {
-                    provider: "claude".into(),
+                    provider: "claude-code".into(),
                     rows: 1
                 },
                 ProviderUsageInventory {

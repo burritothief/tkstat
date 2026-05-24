@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use crate::domain::pricing::{
     PricingInterval, TokenCategory, billable_token_categories_for_counts, nonzero_token_categories,
 };
+use crate::domain::provider::{CLAUDE_CODE_PROVIDER, CODEX_PROVIDER};
 use crate::domain::usage::TokenRecord;
 
 pub trait PricingFetcher {
@@ -141,12 +142,22 @@ pub fn insert_interval_if_missing(conn: &Connection, interval: &PricingInterval)
 }
 
 pub fn seed_pricing(conn: &Connection) -> Result<usize> {
+    seed_pricing_intervals(conn, &seed_intervals())
+}
+
+fn seed_pricing_intervals(conn: &Connection, intervals: &[PricingInterval]) -> Result<usize> {
+    for interval in intervals {
+        validate_interval(interval)?;
+    }
+
+    let tx = conn.unchecked_transaction()?;
     let mut inserted = 0;
-    for interval in seed_intervals() {
-        if insert_interval_if_missing(conn, &interval)? {
+    for interval in intervals {
+        if insert_interval_if_missing(&tx, interval)? {
             inserted += 1;
         }
     }
+    tx.commit()?;
     Ok(inserted)
 }
 
@@ -921,7 +932,7 @@ fn add_anthropic_model(
         (TokenCategory::CacheRead, input * 0.10),
     ] {
         intervals.push(PricingInterval::usd(
-            "claude",
+            CLAUDE_CODE_PROVIDER,
             model_id,
             category,
             rate,
@@ -947,7 +958,7 @@ fn add_openai_model(
         (TokenCategory::ReasoningOutput, output),
     ] {
         intervals.push(PricingInterval::usd(
-            "codex",
+            CODEX_PROVIDER,
             model_id,
             category,
             rate,
@@ -980,7 +991,7 @@ mod tests {
         to: Option<&str>,
     ) -> PricingInterval {
         let mut interval = PricingInterval::usd(
-            "claude",
+            CLAUDE_CODE_PROVIDER,
             "claude-opus-4-6",
             category,
             rate,
@@ -993,7 +1004,7 @@ mod tests {
 
     fn record(model_id: &str) -> TokenRecord {
         TokenRecord {
-            provider: "claude".into(),
+            provider: "claude-code".into(),
             request_id: "r1".into(),
             session_id: "s1".into(),
             uuid: "u1".into(),
@@ -1047,7 +1058,7 @@ mod tests {
 
         let selected = applicable_interval(
             db.conn(),
-            "claude",
+            CLAUDE_CODE_PROVIDER,
             "claude-opus-4-6",
             TokenCategory::Input,
             "2026-04-07T10:00:00Z".parse().unwrap(),
@@ -1077,7 +1088,7 @@ mod tests {
 
         let selected = applicable_interval(
             db.conn(),
-            "claude",
+            CLAUDE_CODE_PROVIDER,
             "claude-opus-4-6",
             TokenCategory::Input,
             "2026-04-07T10:00:00Z".parse().unwrap(),
@@ -1134,7 +1145,7 @@ mod tests {
 
         let err = applicable_interval(
             db.conn(),
-            "claude",
+            CLAUDE_CODE_PROVIDER,
             "claude-opus-4-6",
             TokenCategory::Input,
             "2026-04-07T10:00:00Z".parse().unwrap(),
@@ -1204,6 +1215,24 @@ mod tests {
         let inserted = seed_pricing(db.conn()).unwrap();
         assert!(inserted > 0);
         assert_eq!(seed_pricing(db.conn()).unwrap(), 0);
+        let legacy_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM pricing_intervals WHERE provider = 'claude'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let canonical_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM pricing_intervals WHERE provider = 'claude-code'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy_count, 0);
+        assert!(canonical_count > 0);
 
         let selected = applicable_interval(
             db.conn(),
@@ -1215,6 +1244,26 @@ mod tests {
         .unwrap();
         assert_eq!(selected.rate_per_1m_tokens, 0.25);
         assert!(selected.source.starts_with("seed:"));
+    }
+
+    #[test]
+    fn test_seed_pricing_intervals_prevalidates_and_leaves_catalog_unchanged_on_error() {
+        let db = Database::open_in_memory().unwrap();
+        let valid = interval(TokenCategory::Input, 15.0, "2026-01-01T00:00:00Z", None);
+        let invalid = interval(TokenCategory::Output, -1.0, "2026-01-01T00:00:00Z", None);
+
+        let err = seed_pricing_intervals(db.conn(), &[valid, invalid])
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("negative price"));
+        let count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM pricing_intervals", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]
@@ -1230,7 +1279,7 @@ mod tests {
         ] {
             let selected = applicable_interval(
                 db.conn(),
-                "claude",
+                CLAUDE_CODE_PROVIDER,
                 "claude-opus-4-5-20251101",
                 category,
                 "2026-01-31T21:20:19.858Z".parse().unwrap(),
@@ -1349,7 +1398,7 @@ mod tests {
             .unwrap();
         insert_raw_pricing_row(
             db.conn(),
-            "claude",
+            CLAUDE_CODE_PROVIDER,
             "claude-opus-4-6",
             "mystery",
             1.0,
@@ -1358,7 +1407,7 @@ mod tests {
         );
         insert_raw_pricing_row(
             db.conn(),
-            "claude",
+            CLAUDE_CODE_PROVIDER,
             "claude-opus-4-7",
             "input",
             1.0,
@@ -1367,7 +1416,7 @@ mod tests {
         );
         insert_raw_pricing_row(
             db.conn(),
-            "claude",
+            CLAUDE_CODE_PROVIDER,
             "claude-opus-4-8",
             "input",
             -1.0,
@@ -1385,7 +1434,7 @@ mod tests {
         );
         insert_raw_pricing_row(
             db.conn(),
-            "claude",
+            CLAUDE_CODE_PROVIDER,
             "",
             "input",
             1.0,
@@ -1394,7 +1443,7 @@ mod tests {
         );
         insert_raw_pricing_row(
             db.conn(),
-            "claude",
+            CLAUDE_CODE_PROVIDER,
             "claude-opus-4-10",
             "input",
             1.0,
@@ -1405,16 +1454,26 @@ mod tests {
         let findings = audit_pricing(db.conn()).unwrap();
         for (provider, model_id, category, remediation) in [
             (
-                "claude",
+                CLAUDE_CODE_PROVIDER,
                 "claude-opus-4-6",
                 "mystery",
                 "supported token category",
             ),
-            ("claude", "claude-opus-4-7", "input", "RFC3339"),
-            ("claude", "claude-opus-4-8", "input", "non-negative rate"),
+            ("claude-code", "claude-opus-4-7", "input", "RFC3339"),
+            (
+                "claude-code",
+                "claude-opus-4-8",
+                "input",
+                "non-negative rate",
+            ),
             ("", "claude-opus-4-9", "input", "non-empty provider"),
-            ("claude", "", "input", "non-empty model id"),
-            ("claude", "claude-opus-4-10", "input", "non-empty source"),
+            ("claude-code", "", "input", "non-empty model id"),
+            (
+                "claude-code",
+                "claude-opus-4-10",
+                "input",
+                "non-empty source",
+            ),
         ] {
             assert!(
                 findings.iter().any(|finding| {
@@ -1539,7 +1598,7 @@ mod tests {
 
         let selected = applicable_interval(
             db.conn(),
-            "claude",
+            CLAUDE_CODE_PROVIDER,
             "claude-opus-4-6",
             TokenCategory::Input,
             "2026-04-07T10:00:00Z".parse().unwrap(),
@@ -1621,7 +1680,7 @@ mod tests {
         assert!(refresh_pricing(db.conn(), &FailingFetcher).is_err());
         let selected = applicable_interval(
             db.conn(),
-            "claude",
+            CLAUDE_CODE_PROVIDER,
             "claude-opus-4-6",
             TokenCategory::Input,
             "2026-04-07T10:00:00Z".parse().unwrap(),

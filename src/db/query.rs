@@ -5,7 +5,10 @@ use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeDelta, Utc};
 use rusqlite::Connection;
 
 use crate::domain::period::TimePeriod;
-use crate::domain::pricing::{TokenCategory, billable_token_categories_for_counts};
+use crate::domain::pricing::{
+    BillableTokenExpression, TokenCategory, TokenCountField, billable_token_categories_for_counts,
+    billable_token_rule, default_billing_rules, provider_billing_policies,
+};
 use crate::domain::usage::{AggregatedRow, ModelFamily};
 
 /// Filter parameters for queries.
@@ -449,18 +452,69 @@ fn row_to_aggregated(row: &rusqlite::Row<'_>) -> rusqlite::Result<AggregatedRow>
     })
 }
 
-fn cost_sql_expr(cost_required: bool) -> &'static str {
+fn cost_sql_expr(cost_required: bool) -> String {
     if !cost_required {
-        return "0.0";
+        return "0.0".into();
     }
-    "(
-        (CASE WHEN provider = 'codex' THEN MAX(input_tokens - cached_input_tokens, 0) ELSE input_tokens END) * COALESCE((SELECT p.rate_per_1m_tokens FROM pricing_intervals p WHERE p.provider = token_usage.provider AND p.model_id = token_usage.model_id AND p.token_category = 'input' AND p.currency = 'USD' AND p.effective_from <= timestamp AND (p.effective_to IS NULL OR timestamp < p.effective_to)), 0) +
-        output_tokens * COALESCE((SELECT p.rate_per_1m_tokens FROM pricing_intervals p WHERE p.provider = token_usage.provider AND p.model_id = token_usage.model_id AND p.token_category = 'output' AND p.currency = 'USD' AND p.effective_from <= timestamp AND (p.effective_to IS NULL OR timestamp < p.effective_to)), 0) +
-        cache_read_tokens * COALESCE((SELECT p.rate_per_1m_tokens FROM pricing_intervals p WHERE p.provider = token_usage.provider AND p.model_id = token_usage.model_id AND p.token_category = 'cache_read' AND p.currency = 'USD' AND p.effective_from <= timestamp AND (p.effective_to IS NULL OR timestamp < p.effective_to)), 0) +
-        cache_creation_tokens * COALESCE((SELECT p.rate_per_1m_tokens FROM pricing_intervals p WHERE p.provider = token_usage.provider AND p.model_id = token_usage.model_id AND p.token_category = 'cache_creation' AND p.currency = 'USD' AND p.effective_from <= timestamp AND (p.effective_to IS NULL OR timestamp < p.effective_to)), 0) +
-        cached_input_tokens * COALESCE((SELECT p.rate_per_1m_tokens FROM pricing_intervals p WHERE p.provider = token_usage.provider AND p.model_id = token_usage.model_id AND p.token_category = 'cached_input' AND p.currency = 'USD' AND p.effective_from <= timestamp AND (p.effective_to IS NULL OR timestamp < p.effective_to)), 0) +
-        (CASE WHEN provider = 'codex' THEN 0 ELSE reasoning_output_tokens END) * COALESCE((SELECT p.rate_per_1m_tokens FROM pricing_intervals p WHERE p.provider = token_usage.provider AND p.model_id = token_usage.model_id AND p.token_category = 'reasoning_output' AND p.currency = 'USD' AND p.effective_from <= timestamp AND (p.effective_to IS NULL OR timestamp < p.effective_to)), 0)
-    ) / 1000000.0"
+    let terms = TokenCategory::ALL
+        .into_iter()
+        .map(|category| {
+            format!(
+                "{} * {}",
+                billable_tokens_sql(category),
+                price_lookup_sql(category)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" + ");
+    format!("({terms}) / 1000000.0")
+}
+
+fn billable_tokens_sql(category: TokenCategory) -> String {
+    let default_expr = billable_token_rule(default_billing_rules(), category).expression;
+    let mut sql = token_expression_sql(default_expr);
+    for policy in provider_billing_policies().iter().rev() {
+        let policy_expr = billable_token_rule(policy.rules, category).expression;
+        if policy_expr != default_expr {
+            sql = format!(
+                "(CASE WHEN token_usage.provider = '{}' THEN {} ELSE {} END)",
+                policy.provider,
+                token_expression_sql(policy_expr),
+                sql
+            );
+        }
+    }
+    sql
+}
+
+fn token_expression_sql(expression: BillableTokenExpression) -> String {
+    match expression {
+        BillableTokenExpression::Field(field) => token_count_field_sql(field).into(),
+        BillableTokenExpression::SaturatingSub(minuend, subtrahend) => format!(
+            "MAX({} - {}, 0)",
+            token_count_field_sql(minuend),
+            token_count_field_sql(subtrahend)
+        ),
+        BillableTokenExpression::Zero => "0".into(),
+    }
+}
+
+fn token_count_field_sql(field: TokenCountField) -> &'static str {
+    match field {
+        TokenCountField::Input => "input_tokens",
+        TokenCountField::Output => "output_tokens",
+        TokenCountField::CacheRead => "cache_read_tokens",
+        TokenCountField::CacheCreation => "cache_creation_tokens",
+        TokenCountField::CachedInput => "cached_input_tokens",
+        TokenCountField::ReasoningOutput => "reasoning_output_tokens",
+    }
+}
+
+fn price_lookup_sql(category: TokenCategory) -> String {
+    format!(
+        "COALESCE((SELECT p.rate_per_1m_tokens FROM pricing_intervals p WHERE p.provider = token_usage.provider AND p.model_id = token_usage.model_id AND p.token_category = '{}' AND p.currency = 'USD' AND p.effective_from <= timestamp AND (p.effective_to IS NULL OR timestamp < p.effective_to)), 0)",
+        category.as_str()
+    )
 }
 
 fn validate_pricing_if_required(
@@ -809,6 +863,7 @@ fn build_where_clause(filter: &QueryFilter) -> (String, Vec<Box<dyn rusqlite::ty
 mod tests {
     use super::*;
     use crate::db::Database;
+    use crate::db::pricing::calculate_record_cost;
     use crate::domain::pricing::{PricingInterval, TokenCategory};
     use crate::domain::usage::ModelFamily;
 
@@ -833,7 +888,7 @@ mod tests {
         output: u64,
     ) -> crate::domain::usage::TokenRecord {
         crate::domain::usage::TokenRecord {
-            provider: "claude".into(),
+            provider: "claude-code".into(),
             request_id: id.into(),
             session_id: format!("s-{id}"),
             uuid: format!("u-{id}"),
@@ -860,7 +915,7 @@ mod tests {
         from: &str,
         to: Option<&str>,
     ) -> PricingInterval {
-        provider_price("claude", model_id, category, rate, from, to)
+        provider_price("claude-code", model_id, category, rate, from, to)
     }
 
     fn provider_price(
@@ -965,7 +1020,7 @@ mod tests {
         let rows = query_by_model(db.conn(), &filter, 10).unwrap();
 
         assert!(rows.iter().any(|r| {
-            r.provider.as_deref() == Some("claude")
+            r.provider.as_deref() == Some("claude-code")
                 && r.model_id.as_deref() == Some("claude-opus-4-6")
         }));
         assert!(rows.iter().any(|r| {
@@ -1099,7 +1154,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].provider.as_deref(), Some("claude"));
+        assert_eq!(rows[0].provider.as_deref(), Some("claude-code"));
         assert_eq!(rows[0].input_tokens, 300);
     }
 
@@ -1148,7 +1203,7 @@ mod tests {
         let rows = query_by_project(
             db.conn(),
             &QueryFilter {
-                provider: Some("claude".into()),
+                provider: Some("claude-code".into()),
                 project: Some("proj-b".into()),
                 model: Some("opus".into()),
                 include_subagents: true,
@@ -1601,6 +1656,118 @@ mod tests {
         assert_eq!(summary.output_tokens, 20);
         assert_eq!(summary.reasoning_output_tokens, 7);
         assert_eq!(summary.total_tokens, 120);
+    }
+
+    #[test]
+    fn test_sql_cost_matches_record_cost_billing_policy_for_mixed_providers() {
+        let db = Database::open_in_memory().unwrap();
+        for (category, rate) in [
+            (TokenCategory::Input, 10.0),
+            (TokenCategory::Output, 100.0),
+            (TokenCategory::CacheCreation, 12.5),
+            (TokenCategory::CacheRead, 1.0),
+            (TokenCategory::CachedInput, 0.5),
+            (TokenCategory::ReasoningOutput, 50.0),
+        ] {
+            db.insert_pricing_interval(&provider_price(
+                "claude-code",
+                "claude-policy",
+                category,
+                rate,
+                "2026-01-01T00:00:00Z",
+                None,
+            ))
+            .unwrap();
+        }
+        for (category, rate) in [
+            (TokenCategory::Input, 10.0),
+            (TokenCategory::CachedInput, 1.0),
+            (TokenCategory::Output, 100.0),
+        ] {
+            db.insert_pricing_interval(&provider_price(
+                "codex",
+                "gpt-policy",
+                category,
+                rate,
+                "2026-01-01T00:00:00Z",
+                None,
+            ))
+            .unwrap();
+        }
+
+        let mut claude = make_record(
+            "policy-claude",
+            "2026-04-07T10:00:00Z",
+            "unknown",
+            "proj-a",
+            100,
+            20,
+        );
+        claude.model_id = "claude-policy".into();
+        claude.cache_creation_tokens = 10;
+        claude.cache_read_tokens = 5;
+        claude.reasoning_output_tokens = 3;
+
+        let mut codex_cached = make_record(
+            "policy-codex-cached",
+            "2026-04-07T11:00:00Z",
+            "unknown",
+            "proj-a",
+            100,
+            20,
+        );
+        codex_cached.provider = "codex".into();
+        codex_cached.model = ModelFamily::Unknown;
+        codex_cached.model_id = "gpt-policy".into();
+        codex_cached.cached_input_tokens = 40;
+        codex_cached.reasoning_output_tokens = 7;
+
+        let mut codex_overcached = make_record(
+            "policy-codex-overcached",
+            "2026-04-07T12:00:00Z",
+            "unknown",
+            "proj-a",
+            30,
+            10,
+        );
+        codex_overcached.provider = "codex".into();
+        codex_overcached.model = ModelFamily::Unknown;
+        codex_overcached.model_id = "gpt-policy".into();
+        codex_overcached.cached_input_tokens = 40;
+        codex_overcached.reasoning_output_tokens = 9;
+
+        let mut codex_uncached = make_record(
+            "policy-codex-uncached",
+            "2026-04-07T13:00:00Z",
+            "unknown",
+            "proj-a",
+            25,
+            5,
+        );
+        codex_uncached.provider = "codex".into();
+        codex_uncached.model = ModelFamily::Unknown;
+        codex_uncached.model_id = "gpt-policy".into();
+
+        let records = vec![claude, codex_cached, codex_overcached, codex_uncached];
+        db.insert_records(&records).unwrap();
+
+        let expected = records
+            .iter()
+            .map(|record| calculate_record_cost(db.conn(), record).unwrap())
+            .sum::<f64>();
+        let filter = QueryFilter {
+            include_subagents: true,
+            ..Default::default()
+        };
+        let summary = query_summary(db.conn(), &filter).unwrap();
+        let daily = query_by_period(db.conn(), TimePeriod::Daily, &filter, 10).unwrap();
+
+        assert!((summary.cost_usd - expected).abs() < 0.000001);
+        assert_eq!(daily.len(), 1);
+        assert!((daily[0].cost_usd - expected).abs() < 0.000001);
+        assert_eq!(summary.input_tokens, 255);
+        assert_eq!(summary.cached_input_tokens, 80);
+        assert_eq!(summary.reasoning_output_tokens, 19);
     }
 
     #[test]

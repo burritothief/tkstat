@@ -36,14 +36,14 @@ mod tests {
     fn test_json_includes_model_group_metadata_when_present() {
         let rows = vec![AggregatedRow {
             period: "claude/claude-sonnet-4-5-20250929".into(),
-            provider: Some("claude".into()),
+            provider: Some("claude-code".into()),
             model_id: Some("claude-sonnet-4-5-20250929".into()),
             request_count: 1,
             ..Default::default()
         }];
         let json = render_json(&rows);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed[0]["provider"], "claude");
+        assert_eq!(parsed[0]["provider"], "claude-code");
         assert_eq!(parsed[0]["model_id"], "claude-sonnet-4-5-20250929");
     }
 

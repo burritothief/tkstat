@@ -14,7 +14,7 @@ use crate::domain::usage::{ModelFamily, TokenRecord};
 use crate::ingest::ParsedFile;
 use crate::ingest::walker::SourceFile;
 
-pub const CODEX_PROVIDER: &str = "codex";
+pub const CODEX_PROVIDER: &str = crate::domain::provider::CODEX_PROVIDER;
 
 #[derive(Debug, Deserialize)]
 struct CodexEntry {

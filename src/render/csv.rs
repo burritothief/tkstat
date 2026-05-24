@@ -131,14 +131,14 @@ mod tests {
     fn test_csv_includes_group_metadata() {
         let rows = vec![AggregatedRow {
             period: "claude/claude-opus-4-6".into(),
-            provider: Some("claude".into()),
+            provider: Some("claude-code".into()),
             model_id: Some("claude-opus-4-6".into()),
             project: Some("demo".into()),
             ..Default::default()
         }];
         let csv = render_csv(&rows, &[Column::Total]);
         assert!(csv.starts_with("period,provider,model_id,project,total_tokens\n"));
-        assert!(csv.contains("claude,claude-opus-4-6,demo"));
+        assert!(csv.contains("claude-code,claude-opus-4-6,demo"));
     }
 
     #[test]

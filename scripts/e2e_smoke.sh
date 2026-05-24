@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# End-to-end smoke test for the installed or locally built tkstat binary.
+#
+# The script builds tkstat unless TKSTAT_BIN points at an existing binary, creates
+# a temporary database plus synthetic Claude/Codex source trees, and verifies the
+# core ingest, pricing, table, JSON, and CSV workflows. It is intentionally
+# black-box: failures usually mean a real CLI workflow regressed.
+#
+# Examples:
+#   scripts/e2e_smoke.sh
+#   TKSTAT_BIN=target/release/tkstat scripts/e2e_smoke.sh
+#   KEEP_TMP=1 scripts/e2e_smoke.sh
+#
 script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 
@@ -72,7 +84,7 @@ assert_contains "$refresh_out" "refreshed pricing catalog"
 
 by_provider="$(run_capture "$bin" --force-update --provider all --db "$db" --data-dir "$claude_projects" --by-provider --no-color)"
 assert_contains "$by_provider" "all providers / by provider"
-assert_contains "$by_provider" "claude"
+assert_contains "$by_provider" "claude-code"
 assert_contains "$by_provider" "codex"
 
 daily="$(run_capture "$bin" --provider all --db "$db" --data-dir "$claude_projects" -d --limit 200 --no-color)"

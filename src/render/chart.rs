@@ -210,8 +210,8 @@ mod tests {
             ("2026-04-02".into(), 0.0),
             ("2026-04-03".into(), 0.0),
         ];
-        let output = render_chart("claude", &data, "tokens");
-        assert!(output.contains("claude / chart"));
+        let output = render_chart("claude-code", &data, "tokens");
+        assert!(output.contains("claude-code / chart"));
     }
 
     #[test]

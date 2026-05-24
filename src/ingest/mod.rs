@@ -702,7 +702,7 @@ mod tests {
         let claude = crate::db::query::query_summary(
             db.conn(),
             &crate::db::query::QueryFilter {
-                provider: Some("claude".into()),
+                provider: Some("claude-code".into()),
                 include_subagents: true,
                 ..Default::default()
             },
