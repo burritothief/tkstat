@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{Result, bail};
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeDelta, Timelike, Utc};
 use rusqlite::Connection;
+use serde::Serialize;
 
 use crate::domain::period::{ReportTimeZone, TimePeriod, day_sql_expr};
 use crate::domain::pricing::{
@@ -13,6 +14,8 @@ use crate::domain::pricing::{
 use crate::domain::provider::ProviderId;
 use crate::domain::timestamp::{format_utc_rfc3339, parse_canonical_utc_rfc3339};
 use crate::domain::usage::{AggregatedRow, ModelFamily};
+
+const SOURCE_STALE_AFTER_DAYS: i64 = 90;
 
 /// Filter parameters for queries.
 #[derive(Debug, Default, Clone)]
@@ -393,6 +396,232 @@ pub fn query_summary(conn: &Connection, filter: &QueryFilter) -> Result<Aggregat
     Ok(stmt.query_row(param_refs.as_slice(), row_to_aggregated)?)
 }
 
+pub fn explain_cost(conn: &Connection, filter: &QueryFilter) -> Result<CostExplanation> {
+    let summary = query_summary(conn, filter)?;
+    let assumptions = cost_assumptions(conn, filter)?;
+    let component_count = filtered_component_count(conn, filter)?;
+    let confidence = if assumptions.is_empty() {
+        CostConfidence::High
+    } else {
+        CostConfidence::Estimated
+    };
+    Ok(CostExplanation {
+        confidence,
+        cost_usd: summary.cost_usd,
+        component_count,
+        assumptions,
+    })
+}
+
+fn filtered_component_count(conn: &Connection, filter: &QueryFilter) -> Result<u64> {
+    if !table_exists(conn, "usage_billing_components")? {
+        return Ok(0);
+    }
+    let (where_clause, params) = build_where_clause(filter);
+    let sql = format!(
+        "SELECT COUNT(*)
+         FROM (SELECT provider, request_id FROM token_usage WHERE 1=1 {where_clause}) token_usage
+         JOIN usage_billing_components c
+           ON c.provider = token_usage.provider
+          AND c.request_id = token_usage.request_id"
+    );
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let count: i64 = conn.query_row(&sql, param_refs.as_slice(), |row| row.get(0))?;
+    Ok(count.max(0) as u64)
+}
+
+fn cost_assumptions(conn: &Connection, filter: &QueryFilter) -> Result<Vec<CostAssumption>> {
+    if !table_exists(conn, "usage_billing_components")? {
+        return Ok(Vec::new());
+    }
+    let (where_clause, params) = build_where_clause(filter);
+    let sql = format!(
+        "SELECT DISTINCT c.provider, c.model_id, c.token_category, c.service_tier, c.speed,
+                c.region, c.processing_mode, p.source, s.source_kind, s.source_retrieved_at
+         FROM (SELECT provider, request_id FROM token_usage WHERE 1=1 {where_clause}) token_usage
+         JOIN usage_billing_components c
+           ON c.provider = token_usage.provider
+          AND c.request_id = token_usage.request_id
+         LEFT JOIN pricing_intervals p
+           ON p.provider = c.provider
+          AND p.model_id = c.model_id
+          AND p.token_category = c.token_category
+          AND p.service_tier IS c.service_tier
+          AND p.speed IS c.speed
+          AND p.region IS c.region
+          AND p.processing_mode IS c.processing_mode
+          AND p.source_detail IS c.source_detail
+          AND p.currency = 'USD'
+          AND p.effective_from <= c.timestamp
+          AND (p.effective_to IS NULL OR c.timestamp < p.effective_to)
+         LEFT JOIN pricing_sources s
+           ON s.source = p.source
+         ORDER BY c.provider, c.model_id, c.token_category"
+    );
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(param_refs.as_slice(), |row| {
+            Ok(CostAssumptionRow {
+                provider: row.get(0)?,
+                model_id: row.get(1)?,
+                token_category: row.get(2)?,
+                service_tier: row.get(3)?,
+                speed: row.get(4)?,
+                region: row.get(5)?,
+                processing_mode: row.get(6)?,
+                source: row.get(7)?,
+                source_kind: row.get(8)?,
+                source_retrieved_at: row.get(9)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let cutoff = Utc::now().date_naive() - TimeDelta::days(SOURCE_STALE_AFTER_DAYS);
+    let mut assumptions = Vec::new();
+    for row in rows {
+        assumptions.extend(default_modifier_assumptions(&row));
+        match row.source_kind.as_deref() {
+            Some("bundled") => assumptions.push(source_assumption(
+                CostAssumptionKind::BundledPricingSource,
+                &row,
+                "bundled pricing snapshot was used; import reviewed pricing for current local estimates",
+            )),
+            Some(_) => {}
+            None if row.source.is_some() => assumptions.push(source_assumption(
+                CostAssumptionKind::MissingPricingSourceMetadata,
+                &row,
+                "pricing source metadata is missing; import a reviewed catalog or reseed pricing",
+            )),
+            None => {}
+        }
+        if let Some(retrieved_at) = &row.source_retrieved_at
+            && let Ok(retrieved_date) = NaiveDate::parse_from_str(retrieved_at, "%Y-%m-%d")
+            && retrieved_date < cutoff
+        {
+            assumptions.push(source_assumption(
+                CostAssumptionKind::StalePricingSource,
+                &row,
+                "pricing source retrieval date is stale; import reviewed pricing if provider pricing changed",
+            ));
+        }
+    }
+    assumptions.sort_by(|a, b| {
+        (
+            &a.kind,
+            &a.provider,
+            &a.model_id,
+            &a.token_category,
+            &a.dimension,
+            &a.source,
+        )
+            .cmp(&(
+                &b.kind,
+                &b.provider,
+                &b.model_id,
+                &b.token_category,
+                &b.dimension,
+                &b.source,
+            ))
+    });
+    assumptions.dedup();
+    Ok(assumptions)
+}
+
+#[derive(Debug)]
+struct CostAssumptionRow {
+    provider: String,
+    model_id: String,
+    token_category: String,
+    service_tier: Option<String>,
+    speed: Option<String>,
+    region: Option<String>,
+    processing_mode: Option<String>,
+    source: Option<String>,
+    source_kind: Option<String>,
+    source_retrieved_at: Option<String>,
+}
+
+fn default_modifier_assumptions(row: &CostAssumptionRow) -> Vec<CostAssumption> {
+    let mut assumptions = Vec::new();
+    if row.provider == ProviderId::ClaudeCode.as_str() {
+        for (dimension, detail) in [
+            (
+                "service_tier",
+                "Claude service tier was not present in the usage log, so pricing used the default tier key",
+            ),
+            (
+                "speed",
+                "Claude speed modifier was not present in the usage log, so pricing used the default speed key",
+            ),
+            (
+                "region",
+                "Claude inference region was not present in the usage log, so pricing used the default region key",
+            ),
+        ] {
+            if modifier_value(row, dimension).is_none() {
+                assumptions.push(default_modifier_assumption(row, dimension, None, detail));
+            }
+        }
+    }
+    if row.provider == ProviderId::Codex.as_str()
+        && row.processing_mode.as_deref() == Some("standard")
+    {
+        assumptions.push(default_modifier_assumption(
+            row,
+            "processing_mode",
+            Some("standard"),
+            "Codex/OpenAI processing mode is standard; local logs do not prove account-level pricing beyond this mode",
+        ));
+    }
+    assumptions
+}
+
+fn modifier_value<'a>(row: &'a CostAssumptionRow, dimension: &str) -> Option<&'a str> {
+    match dimension {
+        "service_tier" => row.service_tier.as_deref(),
+        "speed" => row.speed.as_deref(),
+        "region" => row.region.as_deref(),
+        "processing_mode" => row.processing_mode.as_deref(),
+        _ => None,
+    }
+}
+
+fn default_modifier_assumption(
+    row: &CostAssumptionRow,
+    dimension: &str,
+    value: Option<&str>,
+    detail: &str,
+) -> CostAssumption {
+    CostAssumption {
+        kind: CostAssumptionKind::AssumedDefaultModifier,
+        provider: row.provider.clone(),
+        model_id: row.model_id.clone(),
+        token_category: row.token_category.clone(),
+        dimension: Some(dimension.into()),
+        value: value.map(str::to_string),
+        source: None,
+        detail: detail.into(),
+    }
+}
+
+fn source_assumption(
+    kind: CostAssumptionKind,
+    row: &CostAssumptionRow,
+    detail: &str,
+) -> CostAssumption {
+    CostAssumption {
+        kind,
+        provider: row.provider.clone(),
+        model_id: row.model_id.clone(),
+        token_category: row.token_category.clone(),
+        dimension: None,
+        value: row.source_kind.clone(),
+        source: row.source.clone(),
+        detail: detail.into(),
+    }
+}
+
 /// Daily totals for heatmap and chart rendering.
 #[derive(Debug)]
 pub struct DailyTotal {
@@ -401,6 +630,40 @@ pub struct DailyTotal {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cost_usd: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum CostConfidence {
+    High,
+    Estimated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum CostAssumptionKind {
+    AssumedDefaultModifier,
+    BundledPricingSource,
+    StalePricingSource,
+    MissingPricingSourceMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CostAssumption {
+    pub kind: CostAssumptionKind,
+    pub provider: String,
+    pub model_id: String,
+    pub token_category: String,
+    pub dimension: Option<String>,
+    pub value: Option<String>,
+    pub source: Option<String>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CostExplanation {
+    pub confidence: CostConfidence,
+    pub cost_usd: f64,
+    pub component_count: u64,
+    pub assumptions: Vec<CostAssumption>,
 }
 
 struct PeriodAggregate {
@@ -1123,7 +1386,9 @@ fn build_where_clause(filter: &QueryFilter) -> (String, Vec<Box<dyn rusqlite::ty
 mod tests {
     use super::*;
     use crate::db::Database;
-    use crate::db::pricing::calculate_record_cost;
+    use crate::db::pricing::{
+        PricingSourceMetadata, calculate_record_cost, upsert_source_metadata,
+    };
     use crate::domain::pricing::{PricingInterval, TokenCategory};
     use crate::domain::usage::ModelFamily;
 
@@ -1223,6 +1488,17 @@ mod tests {
     fn with_speed(mut interval: PricingInterval, speed: &str) -> PricingInterval {
         interval.dimensions.speed = Some(speed.into());
         interval
+    }
+
+    fn reviewed_source(source: &str) -> PricingSourceMetadata {
+        PricingSourceMetadata {
+            source: source.into(),
+            source_url: "https://example.com/pricing".into(),
+            source_retrieved_at: "2026-05-23".into(),
+            catalog_version: "1".into(),
+            source_kind: "reviewed".into(),
+            notes: "reviewed test pricing source".into(),
+        }
     }
 
     #[test]
@@ -2036,6 +2312,130 @@ mod tests {
         )
         .unwrap();
         assert!((summary.cost_usd - 20.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_explain_cost_high_confidence_when_modifiers_and_reviewed_source_are_explicit() {
+        let db = Database::open_in_memory().unwrap();
+        let mut interval = price(
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            10.0,
+            "2026-01-01T00:00:00Z",
+            None,
+        );
+        interval.dimensions.service_tier = Some("standard".into());
+        interval.dimensions.speed = Some("fast".into());
+        interval.dimensions.region = Some("us".into());
+        interval.source = "reviewed:explicit-source".into();
+        db.insert_pricing_interval(&interval).unwrap();
+        upsert_source_metadata(db.conn(), &reviewed_source("reviewed:explicit-source")).unwrap();
+        let mut record = make_record(
+            "explicit",
+            "2026-04-05T10:00:00Z",
+            "opus",
+            "proj-a",
+            1_000_000,
+            0,
+        );
+        record.output_tokens = 0;
+        record.service_tier = Some("standard".into());
+        record.speed = Some("fast".into());
+        record.region = Some("us".into());
+        db.insert_records(&[record]).unwrap();
+
+        let explanation = explain_cost(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(explanation.confidence, CostConfidence::High);
+        assert_eq!(explanation.component_count, 1);
+        assert_eq!(explanation.cost_usd, 10.0);
+        assert!(explanation.assumptions.is_empty());
+    }
+
+    #[test]
+    fn test_explain_cost_reports_assumed_standard_processing_mode() {
+        let db = Database::open_in_memory().unwrap();
+        let mut interval = provider_price(
+            "codex",
+            "gpt-explain",
+            TokenCategory::Input,
+            10.0,
+            "2026-01-01T00:00:00Z",
+            None,
+        );
+        interval.dimensions.processing_mode = Some("standard".into());
+        interval.source = "reviewed:codex-source".into();
+        db.insert_pricing_interval(&interval).unwrap();
+        upsert_source_metadata(db.conn(), &reviewed_source("reviewed:codex-source")).unwrap();
+        let mut record = make_record(
+            "codex-standard",
+            "2026-04-05T10:00:00Z",
+            "unknown",
+            "proj-a",
+            1_000_000,
+            0,
+        );
+        record.provider = crate::domain::provider::ProviderId::Codex;
+        record.model = ModelFamily::Unknown;
+        record.model_id = "gpt-explain".into();
+        record.output_tokens = 0;
+        record.processing_mode = Some("standard".into());
+        db.insert_records(&[record]).unwrap();
+
+        let explanation = explain_cost(
+            db.conn(),
+            &QueryFilter {
+                provider: Some(crate::domain::provider::ProviderId::Codex),
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(explanation.confidence, CostConfidence::Estimated);
+        assert!(explanation.assumptions.iter().any(|assumption| {
+            assumption.kind == CostAssumptionKind::AssumedDefaultModifier
+                && assumption.dimension.as_deref() == Some("processing_mode")
+                && assumption.value.as_deref() == Some("standard")
+        }));
+    }
+
+    #[test]
+    fn test_explain_cost_reports_bundled_pricing_source() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_pricing().unwrap();
+        let mut record = make_record(
+            "bundled",
+            "2026-04-05T10:00:00Z",
+            "opus",
+            "proj-a",
+            1_000_000,
+            0,
+        );
+        record.output_tokens = 0;
+        db.insert_records(&[record]).unwrap();
+
+        let explanation = explain_cost(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(explanation.confidence, CostConfidence::Estimated);
+        assert!(explanation.assumptions.iter().any(|assumption| {
+            assumption.kind == CostAssumptionKind::BundledPricingSource
+                && assumption
+                    .source
+                    .as_deref()
+                    .is_some_and(|source| source.starts_with("seed:"))
+        }));
     }
 
     #[test]

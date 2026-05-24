@@ -43,6 +43,7 @@ pub enum OutputMode {
     ByProvider,
     ByProject,
     Budget,
+    CostExplain,
     Summary,
     Heatmap,
     Chart,
@@ -188,6 +189,7 @@ pub struct Cli {
             "summary",
             "doctor",
             "budget",
+            "cost_explain",
             "pricing_seed",
             "pricing_refresh",
             "pricing_import",
@@ -203,6 +205,28 @@ pub struct Cli {
     /// Audit local pricing coverage without ingesting or refreshing
     #[arg(long = "pricing-audit")]
     pub pricing_audit: bool,
+
+    /// Explain cost confidence and pricing assumptions for the selected usage
+    #[arg(
+        long = "cost-explain",
+        conflicts_with_all = [
+            "csv",
+            "oneline",
+            "chart",
+            "heatmap",
+            "summary",
+            "budget",
+            "doctor",
+            "pricing_seed",
+            "pricing_refresh",
+            "pricing_import",
+            "pricing_audit",
+            "by_model",
+            "by_provider",
+            "by_project"
+        ]
+    )]
+    pub cost_explain: bool,
 
     /// Columns to display (comma-separated: input,output,cache_rd,cache_cr,cached_input,reasoning_output,total,cost,reqs,sessions)
     #[arg(long = "columns", value_name = "COLS")]
@@ -277,7 +301,9 @@ impl Cli {
     /// Resolve the output mode from CLI flags.
     pub fn output_mode(&self) -> OutputMode {
         let period = self.period();
-        if self.budget {
+        if self.cost_explain {
+            OutputMode::CostExplain
+        } else if self.budget {
             OutputMode::Budget
         } else if self.by_project {
             OutputMode::ByProject
@@ -375,6 +401,12 @@ mod tests {
     }
 
     #[test]
+    fn test_cost_explain_flag_selects_cost_explain_report() {
+        let cli = Cli::parse_from(["tkstat", "--cost-explain"]);
+        assert!(matches!(cli.output_mode(), OutputMode::CostExplain));
+    }
+
+    #[test]
     fn test_model_and_model_family_flags_populate_filter() {
         let cli = Cli::parse_from([
             "tkstat",
@@ -441,6 +473,7 @@ mod tests {
         assert!(help.contains("--pricing-refresh"));
         assert!(help.contains("--pricing-import"));
         assert!(help.contains("--pricing-audit"));
+        assert!(help.contains("--cost-explain"));
         assert!(help.contains("--doctor"));
         assert!(help.contains("--csv"));
         assert!(help.contains("--daily-budget-usd"));
@@ -471,6 +504,7 @@ mod tests {
             "--pricing-refresh",
             "--pricing-import",
             "--pricing-audit",
+            "--cost-explain",
         ] {
             let args = if flag == "--pricing-import" {
                 vec!["tkstat", "--csv", flag, "catalog.json"]
