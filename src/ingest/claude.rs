@@ -214,7 +214,7 @@ mod tests {
         let records = parse_jsonl_bytes(line.as_bytes(), &make_source_file());
         assert_eq!(records.len(), 1);
         let r = &records[0];
-        assert_eq!(r.provider, CLAUDE_PROVIDER);
+        assert_eq!(r.provider, ProviderId::ClaudeCode);
         assert_eq!(r.request_id, "req1");
         assert_eq!(r.model, ModelFamily::Opus);
         assert_eq!(r.model_id, "claude-opus-4-6");

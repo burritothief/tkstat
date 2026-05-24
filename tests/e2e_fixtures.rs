@@ -4,6 +4,7 @@ mod support;
 use support::*;
 
 use std::ffi::OsStr;
+use tkstat::domain::provider::ProviderId;
 
 #[test]
 fn test_e2e_harness_uses_isolated_temp_roots_and_databases() {
@@ -66,7 +67,7 @@ fn test_fixture_corpus_parses_claude_identity_categories_projects_and_subagents(
 
     assert_eq!(records.len(), 4);
     assert!(records.iter().any(|record| {
-        record.provider == "claude-code"
+        record.provider == ProviderId::ClaudeCode
             && record.project == "demo"
             && record.model_id == "claude-opus-4-5-20251101"
             && record.timestamp.to_rfc3339() == "2026-01-31T21:20:19.858+00:00"
@@ -92,7 +93,7 @@ fn test_fixture_corpus_parses_codex_cached_and_reasoning_categories() {
 
     assert_eq!(records.len(), 1);
     let record = &records[0];
-    assert_eq!(record.provider, "codex");
+    assert_eq!(record.provider, ProviderId::Codex);
     assert_eq!(record.project, "tkstat");
     assert_eq!(record.model_id, "gpt-5.5");
     assert_eq!(record.cached_input_tokens, 40);
@@ -144,7 +145,7 @@ fn test_committed_provider_fixture_files_parse_expected_records() {
 
     assert_eq!(claude_records.len(), 4);
     assert!(claude_records.iter().any(|record| {
-        record.provider == "claude-code"
+        record.provider == ProviderId::ClaudeCode
             && record.project == "demo"
             && record.session_id == "corpus-session-main"
             && record.model_id == "claude-opus-4-5-20251101"
@@ -153,7 +154,7 @@ fn test_committed_provider_fixture_files_parse_expected_records() {
             && record.cache_read_tokens == 200
     }));
     assert!(claude_records.iter().any(|record| {
-        record.provider == "claude-code"
+        record.provider == ProviderId::ClaudeCode
             && record.project == "demo"
             && record.session_id == "corpus-session-subagent"
             && record.is_subagent
@@ -166,7 +167,7 @@ fn test_committed_provider_fixture_files_parse_expected_records() {
 
     assert_eq!(codex_records.len(), 1);
     let codex = &codex_records[0];
-    assert_eq!(codex.provider, "codex");
+    assert_eq!(codex.provider, ProviderId::Codex);
     assert_eq!(codex.project, "tkstat");
     assert_eq!(codex.session_id, "synthetic-codex-session");
     assert_eq!(codex.model_id, "gpt-5.5");

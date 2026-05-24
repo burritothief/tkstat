@@ -54,12 +54,6 @@ impl AsRef<str> for ProviderId {
     }
 }
 
-impl PartialEq<&str> for ProviderId {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
-    }
-}
-
 pub fn canonical_provider_id(provider: &str) -> Option<&'static str> {
     ProviderId::parse(provider).map(ProviderId::as_str)
 }
@@ -87,6 +81,21 @@ mod tests {
         );
         assert_eq!(ProviderId::ClaudeCode.as_str(), CLAUDE_CODE_PROVIDER);
         assert_eq!(ProviderId::Codex.to_string(), CODEX_PROVIDER);
+    }
+
+    #[test]
+    fn test_provider_id_comparison_style_is_typed_until_serialization() {
+        assert_eq!(
+            ProviderId::from_canonical(CLAUDE_CODE_PROVIDER),
+            Some(ProviderId::ClaudeCode)
+        );
+        assert_eq!(
+            ProviderId::from_canonical(CODEX_PROVIDER),
+            Some(ProviderId::Codex)
+        );
+        assert_ne!(ProviderId::ClaudeCode, ProviderId::Codex);
+        assert_eq!(ProviderId::ClaudeCode.as_str(), CLAUDE_CODE_PROVIDER);
+        assert_eq!(ProviderId::Codex.as_str(), CODEX_PROVIDER);
     }
 
     #[test]
