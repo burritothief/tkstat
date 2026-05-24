@@ -68,6 +68,7 @@ mkdir -p "$claude_projects/-home-tester-work-demo"
 cat >"$claude_projects/-home-tester-work-demo/main.jsonl" <<'JSONL'
 {"type":"assistant","message":{"model":"claude-opus-4-5-20251101","usage":{"input_tokens":20,"cache_creation_input_tokens":100,"cache_read_input_tokens":200,"output_tokens":10}},"requestId":"smoke-claude-opus","uuid":"smoke-claude-opus-uuid","timestamp":"2026-01-31T21:20:19.858Z","sessionId":"smoke-claude-session"}
 {"type":"assistant","message":{"model":"claude-sonnet-4-5-20250929","usage":{"input_tokens":30,"cache_creation_input_tokens":0,"cache_read_input_tokens":50,"output_tokens":40}},"requestId":"smoke-claude-sonnet","uuid":"smoke-claude-sonnet-uuid","timestamp":"2026-02-01T01:44:51.951Z","sessionId":"smoke-claude-session"}
+{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":100,"output_tokens":0,"service_tier":"standard","speed":"standard"}},"requestId":"smoke-claude-haiku-standard","uuid":"smoke-claude-haiku-standard-uuid","timestamp":"2026-05-24T22:20:59.872Z","sessionId":"smoke-claude-session"}
 JSONL
 
 mkdir -p "$codex_home/sessions/2026/05/24"
@@ -95,6 +96,7 @@ assert_contains "$daily" "2026-05-23"
 
 by_model="$(run_capture "$bin" --provider all --db "$db" --data-dir "$claude_projects" --by-model --limit 50 --no-color)"
 assert_contains "$by_model" "claude-opus-4-5-20251101"
+assert_contains "$by_model" "claude-haiku-4-5-20251001"
 assert_contains "$by_model" "gpt-5.5"
 
 json_daily="$(run_capture "$bin" --provider all --db "$db" --data-dir "$claude_projects" --json -d --limit 200)"
