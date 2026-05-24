@@ -59,7 +59,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS token_usage (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-            provider            TEXT NOT NULL,
+            provider            TEXT NOT NULL CHECK(provider IN ('claude-code', 'codex')),
             request_id          TEXT NOT NULL,
             session_id          TEXT NOT NULL,
             uuid                TEXT NOT NULL,
@@ -92,7 +92,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
 
         CREATE TABLE IF NOT EXISTS file_state (
             id                INTEGER PRIMARY KEY AUTOINCREMENT,
-            provider          TEXT NOT NULL,
+            provider          TEXT NOT NULL CHECK(provider IN ('claude-code', 'codex')),
             path              TEXT NOT NULL,
             size_bytes        INTEGER NOT NULL,
             mtime_secs        INTEGER NOT NULL,
@@ -103,7 +103,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
 
         CREATE TABLE IF NOT EXISTS pricing_intervals (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-            provider            TEXT NOT NULL CHECK(provider <> ''),
+            provider            TEXT NOT NULL CHECK(provider IN ('claude-code', 'codex')),
             model_id            TEXT NOT NULL CHECK(model_id <> ''),
             token_category      TEXT NOT NULL CHECK(token_category <> ''),
             currency            TEXT NOT NULL DEFAULT 'USD' CHECK(currency <> ''),
@@ -416,5 +416,47 @@ mod tests {
             .unwrap();
         assert!(indexes.contains(&"idx_pricing_lookup".to_string()));
         assert!(indexes.contains(&"idx_pricing_model".to_string()));
+    }
+
+    #[test]
+    fn test_new_schema_rejects_unsupported_provider_ids() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let usage_err = conn
+            .execute(
+                "INSERT INTO token_usage
+                    (provider, request_id, session_id, uuid, timestamp, model_family, model_id,
+                     input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+                     cached_input_tokens, reasoning_output_tokens, cost_usd, project, source_file, is_subagent)
+                 VALUES ('bogus', 'r1', 's1', 'u1', '2026-04-07T10:00:00Z', 'unknown', 'm1',
+                         1, 0, 0, 0, 0, 0, 0.0, 'project', '/usage.jsonl', 0)",
+                [],
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(usage_err.contains("CHECK"));
+
+        let file_state_err = conn
+            .execute(
+                "INSERT INTO file_state
+                    (provider, path, size_bytes, mtime_secs, last_byte_offset, last_ingested_at)
+                 VALUES ('bogus', '/usage.jsonl', 1, 1, 1, '2026-04-07T10:00:00Z')",
+                [],
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(file_state_err.contains("CHECK"));
+
+        let pricing_err = conn
+            .execute(
+                "INSERT INTO pricing_intervals
+                    (provider, model_id, token_category, currency, rate_per_1m_tokens, effective_from, effective_to, source)
+                 VALUES ('bogus', 'm1', 'input', 'USD', 1.0, '2026-01-01T00:00:00Z', NULL, 'test')",
+                [],
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(pricing_err.contains("CHECK"));
     }
 }

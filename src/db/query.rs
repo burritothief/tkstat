@@ -560,11 +560,16 @@ fn validate_pricing_coverage(conn: &Connection, filter: &QueryFilter) -> Result<
 
     while let Some(row) = rows.next()? {
         let provider: String = row.get(0)?;
-        let provider_id = ProviderId::from_canonical(&provider)
-            .ok_or_else(|| anyhow::anyhow!("unknown provider id in usage row: {provider}"))?;
         let model_id: String = row.get(1)?;
         let timestamp: String = row.get(2)?;
         let timestamp: DateTime<Utc> = timestamp.parse()?;
+        let Some(provider_id) = ProviderId::from_canonical(&provider) else {
+            bail!(
+                "missing pricing coverage for provider={provider}, model={model_id}, category=provider, usage range {} to {}; unsupported provider id in usage row, reingest or repair the database with a supported provider id such as claude-code or codex",
+                timestamp.to_rfc3339(),
+                timestamp.to_rfc3339()
+            );
+        };
         let categories = billable_token_categories_for_counts(
             provider_id,
             row.get::<_, i64>(3)?.max(0) as u64,

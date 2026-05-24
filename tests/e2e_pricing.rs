@@ -342,6 +342,85 @@ fn test_pricing_audit_json_reports_missing_coverage_and_exits_nonzero() {
 }
 
 #[test]
+fn test_pricing_audit_json_reports_unsupported_usage_provider_without_aborting() {
+    let root = temp_root("pricing-audit-unsupported-provider");
+    fs::create_dir_all(&root).unwrap();
+    let projects = root.join("empty-projects");
+    fs::create_dir_all(&projects).unwrap();
+    let db = root.join("tkstat.db");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE pricing_intervals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            token_category TEXT NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'USD',
+            rate_per_1m_tokens REAL NOT NULL,
+            effective_from TEXT NOT NULL,
+            effective_to TEXT,
+            source TEXT NOT NULL
+         );
+         CREATE TABLE token_usage (
+            provider TEXT NOT NULL,
+            request_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            uuid TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            model_family TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            cache_creation_tokens INTEGER NOT NULL,
+            cache_read_tokens INTEGER NOT NULL,
+            cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL,
+            cost_usd REAL NOT NULL,
+            project TEXT NOT NULL,
+            source_file TEXT NOT NULL,
+            is_subagent INTEGER NOT NULL DEFAULT 0
+         );
+         INSERT INTO token_usage
+            (provider, request_id, session_id, uuid, timestamp, model_family, model_id,
+             input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+             cached_input_tokens, reasoning_output_tokens, total_tokens, cost_usd, project, source_file, is_subagent)
+         VALUES
+            ('manual-provider', 'r1', 's1', 'u1', '2026-04-07T10:00:00Z', 'unknown', 'manual-model',
+             10, 0, 0, 0, 0, 0, 10, 0.0, 'manual', '/manual.jsonl', 0);",
+    )
+    .unwrap();
+    drop(conn);
+
+    let output = run_tkstat(
+        &root,
+        [
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+            "--pricing-audit",
+            "--json",
+        ],
+    );
+    assert_failure(&output);
+    let json = parse_stdout_json(&output);
+    let findings = json.as_array().unwrap();
+    assert!(findings.iter().any(|finding| {
+        finding["kind"] == "UnsupportedProviderId"
+            && finding["provider"] == "manual-provider"
+            && finding["model_id"] == "manual-model"
+            && finding["token_category"] == ""
+            && finding["remediation"]
+                .as_str()
+                .unwrap()
+                .contains("canonical provider id")
+    }));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn test_pricing_audit_reports_overlap_and_exits_nonzero() {
     let root = temp_root("pricing-audit-overlap");
     fs::create_dir_all(&root).unwrap();
