@@ -10,17 +10,34 @@ pub enum TimePeriod {
     Yearly,
 }
 
-impl TimePeriod {
-    /// SQL expression to bucket UTC timestamps into this period.
-    pub fn sql_utc_group_expr(&self) -> &'static str {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReportTimeZone {
+    #[default]
+    Local,
+    Utc,
+}
+
+impl ReportTimeZone {
+    pub fn sqlite_modifier_suffix(self) -> &'static str {
         match self {
-            Self::FiveMinutes => {
-                "strftime('%Y-%m-%d %H:', timestamp) || printf('%02d', (cast(strftime('%M', timestamp) as integer) / 5) * 5)"
-            }
-            Self::Hourly => "strftime('%Y-%m-%d %H:00', timestamp)",
-            Self::Daily => "date(timestamp)",
-            Self::Monthly => "strftime('%Y-%m', timestamp)",
-            Self::Yearly => "strftime('%Y', timestamp)",
+            Self::Local => ", 'localtime'",
+            Self::Utc => "",
+        }
+    }
+}
+
+impl TimePeriod {
+    /// SQL expression to bucket stored UTC timestamps into the selected report timezone.
+    pub fn sql_group_expr(&self, timezone: ReportTimeZone) -> String {
+        let suffix = timezone.sqlite_modifier_suffix();
+        match self {
+            Self::FiveMinutes => format!(
+                "strftime('%Y-%m-%d %H:', timestamp{suffix}) || printf('%02d', (cast(strftime('%M', timestamp{suffix}) as integer) / 5) * 5)"
+            ),
+            Self::Hourly => format!("strftime('%Y-%m-%d %H:00', timestamp{suffix})"),
+            Self::Daily => day_sql_expr(timezone),
+            Self::Monthly => format!("strftime('%Y-%m', timestamp{suffix})"),
+            Self::Yearly => format!("strftime('%Y', timestamp{suffix})"),
         }
     }
 
@@ -34,6 +51,10 @@ impl TimePeriod {
             Self::Yearly => 10,
         }
     }
+}
+
+pub fn day_sql_expr(timezone: ReportTimeZone) -> String {
+    format!("date(timestamp{})", timezone.sqlite_modifier_suffix())
 }
 
 impl fmt::Display for TimePeriod {
@@ -71,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sql_utc_group_expr_not_empty() {
+    fn test_sql_group_expr_requires_explicit_timezone_policy() {
         for period in [
             TimePeriod::FiveMinutes,
             TimePeriod::Hourly,
@@ -79,7 +100,17 @@ mod tests {
             TimePeriod::Monthly,
             TimePeriod::Yearly,
         ] {
-            assert!(!period.sql_utc_group_expr().is_empty());
+            assert!(!period.sql_group_expr(ReportTimeZone::Utc).is_empty());
+            assert!(
+                period
+                    .sql_group_expr(ReportTimeZone::Local)
+                    .contains("localtime")
+            );
         }
+        assert_eq!(day_sql_expr(ReportTimeZone::Utc), "date(timestamp)");
+        assert_eq!(
+            day_sql_expr(ReportTimeZone::Local),
+            "date(timestamp, 'localtime')"
+        );
     }
 }

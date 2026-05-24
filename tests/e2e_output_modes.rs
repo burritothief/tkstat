@@ -21,7 +21,7 @@ fn test_primary_report_output_modes_e2e() {
     let daily_stdout = String::from_utf8_lossy(&daily.stdout);
     assert!(daily_stdout.contains("all providers / daily"));
     assert!(daily_stdout.contains("2026-01-31"));
-    assert!(daily_stdout.contains("2026-05-24"));
+    assert!(daily_stdout.contains("2026-05-23"));
     assert!(daily_stdout.contains("$"));
 
     let summary = run_tkstat(&root, base.into_iter().chain(["--summary"]));
@@ -35,7 +35,7 @@ fn test_primary_report_output_modes_e2e() {
     assert_success(&top);
     let top_stdout = String::from_utf8_lossy(&top.stdout);
     assert!(top_stdout.contains("all providers / top days"));
-    assert!(top_stdout.contains("2026-05-24"));
+    assert!(top_stdout.contains("2026-05-23"));
 
     let by_model = run_tkstat(
         &root,
@@ -69,7 +69,7 @@ fn test_primary_report_output_modes_e2e() {
         json.as_array()
             .unwrap()
             .iter()
-            .any(|row| { row["period"] == "2026-05-24" && row["provider"] == "all providers" })
+            .any(|row| { row["period"] == "2026-05-23" && row["provider"] == "all providers" })
     );
 
     let json_model = run_tkstat(&root, base.into_iter().chain(["--by-model", "--json"]));
@@ -89,7 +89,7 @@ fn test_primary_report_output_modes_e2e() {
     assert_success(&csv_daily);
     let csv_daily_stdout = String::from_utf8_lossy(&csv_daily.stdout);
     assert!(csv_daily_stdout.starts_with("period,provider,input_tokens"));
-    assert!(csv_daily_stdout.contains("2026-05-24,all providers,"));
+    assert!(csv_daily_stdout.contains("2026-05-23,all providers,"));
 
     let csv_model = run_tkstat(&root, base.into_iter().chain(["--by-model", "--csv"]));
     assert_success(&csv_model);

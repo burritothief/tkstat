@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeDelta, Utc};
 use rusqlite::Connection;
 
-use crate::domain::period::TimePeriod;
+use crate::domain::period::{ReportTimeZone, TimePeriod, day_sql_expr};
 use crate::domain::pricing::{
     BillableTokenExpression, TokenCategory, TokenCountField, billable_token_categories_for_counts,
     billable_token_rule, default_billing_rules, provider_billing_policies,
@@ -18,6 +18,7 @@ use crate::domain::usage::{AggregatedRow, ModelFamily};
 pub struct QueryFilter {
     pub begin: Option<NaiveDate>,
     pub end: Option<NaiveDate>,
+    pub report_timezone: ReportTimeZone,
     pub provider: Option<ProviderId>,
     pub model: Option<String>,
     pub model_family: Option<String>,
@@ -44,7 +45,7 @@ pub fn query_by_period_with_cost_requirement(
     cost_required: bool,
 ) -> Result<Vec<AggregatedRow>> {
     validate_pricing_if_required(conn, filter, cost_required)?;
-    let group_expr = period_group_expr(period);
+    let group_expr = period_group_expr(period, filter.report_timezone);
     let (where_clause, params) = build_where_clause(filter);
     let cost_expr = cost_sql_expr(cost_required);
 
@@ -102,7 +103,7 @@ pub fn query_top_with_cost_requirement(
     validate_pricing_if_required(conn, filter, cost_required)?;
     let (where_clause, params) = build_where_clause(filter);
     let cost_expr = cost_sql_expr(cost_required);
-    let daily_expr = utc_day_expr();
+    let daily_expr = report_day_expr(filter.report_timezone);
 
     let sql = format!(
         "SELECT
@@ -400,7 +401,7 @@ pub fn query_daily_totals_with_cost_requirement(
     validate_pricing_if_required(conn, filter, cost_required)?;
     let (where_clause, params) = build_where_clause(filter);
     let cost_expr = cost_sql_expr(cost_required);
-    let daily_expr = utc_day_expr();
+    let daily_expr = report_day_expr(filter.report_timezone);
 
     let sql = format!(
         "SELECT
@@ -531,12 +532,12 @@ fn validate_pricing_if_required(
     }
 }
 
-fn period_group_expr(period: TimePeriod) -> &'static str {
-    period.sql_utc_group_expr()
+fn period_group_expr(period: TimePeriod, timezone: ReportTimeZone) -> String {
+    period.sql_group_expr(timezone)
 }
 
-fn utc_day_expr() -> &'static str {
-    "date(timestamp)"
+fn report_day_expr(timezone: ReportTimeZone) -> String {
+    day_sql_expr(timezone)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -822,12 +823,20 @@ fn build_where_clause(filter: &QueryFilter) -> (String, Vec<Box<dyn rusqlite::ty
 
     if let Some(ref begin) = filter.begin {
         params.push(Box::new(begin.to_string()));
-        clauses.push(format!("AND {} >= ?{}", utc_day_expr(), params.len()));
+        clauses.push(format!(
+            "AND {} >= ?{}",
+            report_day_expr(filter.report_timezone),
+            params.len()
+        ));
     }
 
     if let Some(ref end) = filter.end {
         params.push(Box::new(end.to_string()));
-        clauses.push(format!("AND {} <= ?{}", utc_day_expr(), params.len()));
+        clauses.push(format!(
+            "AND {} <= ?{}",
+            report_day_expr(filter.report_timezone),
+            params.len()
+        ));
     }
 
     if let Some(ref provider) = filter.provider {
@@ -922,6 +931,22 @@ mod tests {
             source_file: "/test.jsonl".into(),
             is_subagent: false,
         }
+    }
+
+    fn sqlite_local_day(conn: &Connection, timestamp: &str) -> String {
+        conn.query_row("SELECT date(?1, 'localtime')", [timestamp], |row| {
+            row.get(0)
+        })
+        .unwrap()
+    }
+
+    fn sqlite_local_hour(conn: &Connection, timestamp: &str) -> String {
+        conn.query_row(
+            "SELECT strftime('%Y-%m-%d %H:00', ?1, 'localtime')",
+            [timestamp],
+            |row| row.get(0),
+        )
+        .unwrap()
     }
 
     fn price(
@@ -1297,7 +1322,55 @@ mod tests {
     }
 
     #[test]
-    fn test_query_daily_and_date_filters_use_utc_boundaries() {
+    fn test_query_daily_and_date_filters_default_to_local_boundaries() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_pricing().unwrap();
+        let before_local_midnight = "2026-04-08T06:30:00+00:00";
+        let after_local_midnight = "2026-04-08T07:30:00+00:00";
+        db.insert_records(&[
+            make_record("local-late", before_local_midnight, "opus", "proj-a", 10, 1),
+            make_record("local-early", after_local_midnight, "opus", "proj-a", 20, 1),
+        ])
+        .unwrap();
+
+        let filter = QueryFilter {
+            include_subagents: true,
+            ..Default::default()
+        };
+        let rows = query_by_period(db.conn(), TimePeriod::Daily, &filter, 30).unwrap();
+        let expected_days = [
+            sqlite_local_day(db.conn(), before_local_midnight),
+            sqlite_local_day(db.conn(), after_local_midnight),
+        ];
+        let mut expected_periods = vec![expected_days[0].as_str()];
+        if expected_days[1] != expected_days[0] {
+            expected_periods.push(expected_days[1].as_str());
+        }
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.period.as_str())
+                .collect::<Vec<_>>(),
+            expected_periods
+        );
+
+        let filter = QueryFilter {
+            begin: NaiveDate::parse_from_str(&expected_days[0], "%Y-%m-%d").ok(),
+            end: NaiveDate::parse_from_str(&expected_days[0], "%Y-%m-%d").ok(),
+            include_subagents: true,
+            ..Default::default()
+        };
+        let summary = query_summary(db.conn(), &filter).unwrap();
+        if expected_days[0] == expected_days[1] {
+            assert_eq!(summary.request_count, 2);
+            assert_eq!(summary.input_tokens, 30);
+        } else {
+            assert_eq!(summary.request_count, 1);
+            assert_eq!(summary.input_tokens, 10);
+        }
+    }
+
+    #[test]
+    fn test_query_daily_and_date_filters_can_use_utc_boundaries() {
         let db = Database::open_in_memory().unwrap();
         db.seed_pricing().unwrap();
         db.insert_records(&[
@@ -1307,6 +1380,7 @@ mod tests {
         .unwrap();
 
         let filter = QueryFilter {
+            report_timezone: ReportTimeZone::Utc,
             include_subagents: true,
             ..Default::default()
         };
@@ -1321,6 +1395,7 @@ mod tests {
         let filter = QueryFilter {
             begin: NaiveDate::from_ymd_opt(2026, 4, 8),
             end: NaiveDate::from_ymd_opt(2026, 4, 8),
+            report_timezone: ReportTimeZone::Utc,
             include_subagents: true,
             ..Default::default()
         };
@@ -1330,7 +1405,38 @@ mod tests {
     }
 
     #[test]
-    fn test_hourly_grouping_is_utc_across_dst_spring_boundary() {
+    fn test_hourly_grouping_defaults_to_local_time() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_pricing().unwrap();
+        let first = "2026-04-08T07:30:00+00:00";
+        let second = "2026-04-08T08:30:00+00:00";
+        db.insert_records(&[
+            make_record("local-hour-1", first, "opus", "proj-a", 10, 1),
+            make_record("local-hour-2", second, "opus", "proj-a", 20, 1),
+        ])
+        .unwrap();
+
+        let local_day = sqlite_local_day(db.conn(), first);
+        let filter = QueryFilter {
+            begin: NaiveDate::parse_from_str(&local_day, "%Y-%m-%d").ok(),
+            end: NaiveDate::parse_from_str(&local_day, "%Y-%m-%d").ok(),
+            include_subagents: true,
+            ..Default::default()
+        };
+        let rows = query_by_period(db.conn(), TimePeriod::Hourly, &filter, 30).unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.period.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                sqlite_local_hour(db.conn(), first),
+                sqlite_local_hour(db.conn(), second)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hourly_grouping_can_use_utc_across_dst_spring_boundary() {
         let db = Database::open_in_memory().unwrap();
         db.seed_pricing().unwrap();
         db.insert_records(&[
@@ -1342,6 +1448,7 @@ mod tests {
         let filter = QueryFilter {
             begin: NaiveDate::from_ymd_opt(2026, 3, 8),
             end: NaiveDate::from_ymd_opt(2026, 3, 8),
+            report_timezone: ReportTimeZone::Utc,
             include_subagents: true,
             ..Default::default()
         };
@@ -1355,7 +1462,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hourly_grouping_is_utc_across_dst_fall_boundary() {
+    fn test_hourly_grouping_can_use_utc_across_dst_fall_boundary() {
         let db = Database::open_in_memory().unwrap();
         db.seed_pricing().unwrap();
         db.insert_records(&[
@@ -1367,6 +1474,7 @@ mod tests {
         let filter = QueryFilter {
             begin: NaiveDate::from_ymd_opt(2026, 11, 1),
             end: NaiveDate::from_ymd_opt(2026, 11, 1),
+            report_timezone: ReportTimeZone::Utc,
             include_subagents: true,
             ..Default::default()
         };

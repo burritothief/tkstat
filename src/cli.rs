@@ -2,7 +2,7 @@ use chrono::NaiveDate;
 use clap::{Parser, ValueEnum};
 
 use crate::db::query::QueryFilter;
-use crate::domain::period::TimePeriod;
+use crate::domain::period::{ReportTimeZone, TimePeriod};
 use crate::domain::provider::{
     ALL_PROVIDERS_LABEL, CLAUDE_CODE_PROVIDER, CODEX_PROVIDER, ProviderId,
 };
@@ -152,13 +152,17 @@ pub struct Cli {
     #[arg(long = "session", value_name = "SESSION_ID")]
     pub session: Option<String>,
 
-    /// Begin UTC date for filtering (YYYY-MM-DD)
+    /// Begin report-local date for filtering (YYYY-MM-DD)
     #[arg(short = 'b', long = "begin", value_name = "DATE")]
     pub begin: Option<NaiveDate>,
 
-    /// End UTC date for filtering (YYYY-MM-DD)
+    /// End report-local date for filtering (YYYY-MM-DD)
     #[arg(short = 'e', long = "end", value_name = "DATE")]
     pub end: Option<NaiveDate>,
+
+    /// Use UTC calendar boundaries for report periods and date filters
+    #[arg(long = "utc")]
+    pub utc: bool,
 
     /// Maximum number of rows to display
     #[arg(long = "limit", value_name = "N")]
@@ -321,6 +325,11 @@ impl Cli {
         QueryFilter {
             begin: self.begin,
             end: self.end,
+            report_timezone: if self.utc {
+                ReportTimeZone::Utc
+            } else {
+                ReportTimeZone::Local
+            },
             provider,
             model: self.model.clone(),
             model_family: self.model_family.clone(),
@@ -404,6 +413,18 @@ mod tests {
     }
 
     #[test]
+    fn test_report_timezone_defaults_local_and_utc_flag_overrides() {
+        let default = Cli::parse_from(["tkstat"]);
+        assert_eq!(
+            default.query_filter().report_timezone,
+            ReportTimeZone::Local
+        );
+
+        let utc = Cli::parse_from(["tkstat", "--utc"]);
+        assert_eq!(utc.query_filter().report_timezone, ReportTimeZone::Utc);
+    }
+
+    #[test]
     fn test_help_mentions_model_report_flags() {
         let help = Cli::command().render_long_help().to_string();
         assert!(help.contains("--by-model"));
@@ -419,6 +440,8 @@ mod tests {
         assert!(help.contains("--daily-budget-usd"));
         assert!(help.contains("--monthly-budget-usd"));
         assert!(help.contains("--budget"));
+        assert!(help.contains("--utc"));
+        assert!(help.contains("report-local date"));
         assert!(help.contains("exact model id"));
     }
 
