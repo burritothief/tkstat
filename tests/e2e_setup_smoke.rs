@@ -161,6 +161,38 @@ fn test_e2e_smoke_script_runs_with_compiled_binary() {
 }
 
 #[test]
+fn test_release_gate_builds_cli_ingests_temp_db_and_prints_table() {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/e2e_smoke.sh");
+    let output = Command::new("bash")
+        .arg(script)
+        .env_remove("TKSTAT_BIN")
+        .env("KEEP_TMP", "0")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("tkstat e2e smoke passed"));
+    assert!(stderr.contains("--force-update"));
+    assert!(stderr.contains("--by-provider"));
+    assert!(stderr.contains("--by-model"));
+    assert!(stderr.contains("-d"));
+    assert!(stderr.contains("/target/debug/tkstat"));
+    assert!(!stdout.contains("missing pricing coverage"));
+    assert!(!stderr.contains("missing pricing coverage"));
+    assert!(!stdout.contains("/.claude"));
+    assert!(!stderr.contains("/.claude"));
+    assert!(!stdout.contains("/.codex"));
+    assert!(!stderr.contains("/.codex"));
+}
+
+#[test]
 fn test_operational_script_smoke_runs_with_compiled_binary() {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/script_smoke.sh");
     let output = Command::new("bash")
