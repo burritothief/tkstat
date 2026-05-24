@@ -5,7 +5,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 use crate::domain::pricing::{
-    PricingInterval, TokenCategory, billable_token_categories_for_counts, nonzero_token_categories,
+    PricingInterval, TokenCategory, billable_token_categories_for_counts, billable_usage_components,
 };
 use crate::domain::provider::ProviderId;
 use crate::domain::timestamp::{format_utc_rfc3339, parse_canonical_utc_rfc3339};
@@ -304,15 +304,15 @@ pub fn applicable_interval(
 
 pub fn calculate_record_cost(conn: &Connection, record: &TokenRecord) -> Result<f64> {
     let mut total = 0.0;
-    for (category, tokens) in nonzero_token_categories(record) {
+    for component in billable_usage_components(record) {
         let interval = applicable_interval(
             conn,
-            record.provider,
-            &record.model_id,
-            category,
-            record.timestamp,
+            component.provider,
+            &component.model_id,
+            component.token_category,
+            component.timestamp,
         )?;
-        total += interval.cost_for_tokens(tokens);
+        total += interval.cost_for_tokens(component.tokens);
     }
     Ok(total)
 }
