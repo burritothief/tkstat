@@ -1,6 +1,7 @@
 pub mod budget;
 pub mod chart;
 pub mod columns;
+pub mod cost_explain;
 pub mod csv;
 pub mod doctor;
 pub mod heatmap;

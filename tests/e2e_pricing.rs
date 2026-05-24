@@ -781,6 +781,67 @@ fn test_cost_reports_do_not_fail_for_source_quality_warnings() {
 }
 
 #[test]
+fn test_cost_explain_json_reports_confidence_and_assumptions() {
+    let root = temp_root("cost-explain-json");
+    fs::create_dir_all(&root).unwrap();
+    let projects = root.join("empty-projects");
+    fs::create_dir_all(&projects).unwrap();
+    let db = root.join("tkstat.db");
+    let database = Database::open(&db).unwrap();
+    database.seed_pricing().unwrap();
+    database
+        .insert_records(&[cli_claude_record("cost-explain-r1", "2026-04-07T10:00:00Z")])
+        .unwrap();
+    drop(database);
+
+    let output = run_tkstat(
+        &root,
+        [
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+            "--provider",
+            "claude-code",
+            "--cost-explain",
+            "--json",
+        ],
+    );
+    assert_success(&output);
+    let json = parse_stdout_json(&output);
+    assert_eq!(json["confidence"], "Estimated");
+    assert_eq!(json["component_count"], 1);
+    assert!(json["cost_usd"].as_f64().unwrap() > 0.0);
+    assert!(
+        json["assumptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|assumption| assumption["kind"] == "BundledPricingSource")
+    );
+
+    let text = run_tkstat(
+        &root,
+        [
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+            "--provider",
+            "claude-code",
+            "--cost-explain",
+        ],
+    );
+    assert_success(&text);
+    let stdout = String::from_utf8_lossy(&text.stdout);
+    assert!(stdout.contains("cost explain"));
+    assert!(stdout.contains("Estimated"));
+    assert!(stdout.contains("BundledPricingSource"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn test_pricing_audit_json_reports_unsupported_usage_provider_without_aborting() {
     let root = temp_root("pricing-audit-unsupported-provider");
     fs::create_dir_all(&root).unwrap();

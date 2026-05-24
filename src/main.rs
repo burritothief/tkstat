@@ -175,6 +175,18 @@ fn main() -> Result<()> {
                 render::budget::render_budget_report(provider_label, &rows)
             }
         }
+        OutputMode::CostExplain => {
+            let explanation = db::query::explain_cost(database.conn(), &filter)?;
+            if cli.json {
+                serde_json::to_string_pretty(&explanation)?
+            } else {
+                render::cost_explain::render_cost_explain(
+                    provider_label,
+                    &explanation,
+                    filter_desc.as_deref(),
+                )
+            }
+        }
         OutputMode::Json(period) => {
             let rows = db::query::query_by_period(
                 database.conn(),
