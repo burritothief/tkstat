@@ -254,7 +254,7 @@ fn test_token_only_reports_do_not_require_pricing_but_cost_reports_do() {
 }
 
 #[test]
-fn test_cost_report_missing_component_modifier_writes_no_json_stdout() {
+fn test_cost_report_missing_component_modifier_writes_no_json_or_table_stdout() {
     let root = temp_root("pricing-missing-component-modifier");
     fs::create_dir_all(&root).unwrap();
     let projects = root.join("empty-projects");
@@ -308,6 +308,28 @@ fn test_cost_report_missing_component_modifier_writes_no_json_stdout() {
         stderr.contains("usage range 2026-04-07T10:00:00+00:00 to 2026-04-07T10:00:00+00:00"),
         "stderr did not contain usage range:\n{stderr}"
     );
+
+    let table = run_tkstat(
+        &root,
+        [
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+            "--provider",
+            "claude-code",
+            "-d",
+        ],
+    );
+    assert_failure(&table);
+    assert!(
+        table.stdout.is_empty(),
+        "pricing failure should not write table stdout; stdout:\n{}",
+        String::from_utf8_lossy(&table.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&table.stderr);
+    assert!(stderr.contains("missing pricing coverage"));
+    assert!(stderr.contains("speed=fast"));
 
     let _ = fs::remove_dir_all(root);
 }

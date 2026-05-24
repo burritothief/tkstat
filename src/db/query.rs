@@ -642,7 +642,7 @@ fn validate_pricing_coverage(conn: &Connection, filter: &QueryFilter) -> Result<
     );
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let mut stmt = conn.prepare(&sql)?;
-    let mut coverage: HashMap<CoverageKey, (DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
+    let mut coverage: HashMap<CoverageKey, Vec<DateTime<Utc>>> = HashMap::new();
     let mut rows = stmt.query(param_refs.as_slice())?;
 
     while let Some(row) = rows.next()? {
@@ -680,18 +680,12 @@ fn validate_pricing_coverage(conn: &Connection, filter: &QueryFilter) -> Result<
                 category,
                 dimensions: PricingDimensions::default(),
             };
-            coverage
-                .entry(key)
-                .and_modify(|(min, max)| {
-                    *min = (*min).min(timestamp);
-                    *max = (*max).max(timestamp);
-                })
-                .or_insert((timestamp, timestamp));
+            coverage.entry(key).or_default().push(timestamp);
         }
     }
 
-    for (key, (start, end)) in coverage {
-        validate_category_coverage(conn, &key, start, end)?;
+    for (key, timestamps) in coverage {
+        validate_category_coverage(conn, &key, timestamps)?;
     }
 
     Ok(())
@@ -709,7 +703,7 @@ fn validate_component_pricing_coverage(conn: &Connection, filter: &QueryFilter) 
     );
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let mut stmt = conn.prepare(&sql)?;
-    let mut coverage: HashMap<CoverageKey, (DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
+    let mut coverage: HashMap<CoverageKey, Vec<DateTime<Utc>>> = HashMap::new();
     let mut rows = stmt.query(param_refs.as_slice())?;
 
     while let Some(row) = rows.next()? {
@@ -741,17 +735,11 @@ fn validate_component_pricing_coverage(conn: &Connection, filter: &QueryFilter) 
                 source_detail: row.get(8)?,
             },
         };
-        coverage
-            .entry(key)
-            .and_modify(|(min, max)| {
-                *min = (*min).min(timestamp);
-                *max = (*max).max(timestamp);
-            })
-            .or_insert((timestamp, timestamp));
+        coverage.entry(key).or_default().push(timestamp);
     }
 
-    for (key, (start, end)) in coverage {
-        validate_category_coverage(conn, &key, start, end)?;
+    for (key, timestamps) in coverage {
+        validate_category_coverage(conn, &key, timestamps)?;
     }
 
     Ok(())
@@ -760,11 +748,17 @@ fn validate_component_pricing_coverage(conn: &Connection, filter: &QueryFilter) 
 fn validate_category_coverage(
     conn: &Connection,
     key: &CoverageKey,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
+    mut timestamps: Vec<DateTime<Utc>>,
 ) -> Result<()> {
+    timestamps.sort_unstable();
+    timestamps.dedup();
+    let Some(start) = timestamps.first().copied() else {
+        return Ok(());
+    };
+    let end = timestamps.last().copied().unwrap_or(start);
+
     let mut stmt = conn.prepare(
-        "SELECT effective_from, effective_to
+        "SELECT COUNT(*)
          FROM pricing_intervals
          WHERE provider = ?1
            AND model_id = ?2
@@ -776,11 +770,11 @@ fn validate_category_coverage(
            AND source_detail IS ?8
            AND currency = 'USD'
            AND effective_from <= ?9
-           AND (effective_to IS NULL OR effective_to > ?10)
-         ORDER BY effective_from ASC",
+           AND (effective_to IS NULL OR ?9 < effective_to)",
     )?;
-    let intervals = stmt
-        .query_map(
+
+    for timestamp in timestamps {
+        let matching_count: i64 = stmt.query_row(
             rusqlite::params![
                 key.provider,
                 key.model_id,
@@ -790,99 +784,36 @@ fn validate_category_coverage(
                 key.dimensions.region,
                 key.dimensions.processing_mode,
                 key.dimensions.source_detail,
-                format_utc_rfc3339(end),
-                format_utc_rfc3339(start),
+                format_utc_rfc3339(timestamp),
             ],
-            |row| {
-                let from: String = row.get(0)?;
-                let to: Option<String> = row.get(1)?;
-                Ok((from, to))
-            },
-        )?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-
-    if intervals.is_empty() {
-        bail!(
-            "missing pricing coverage for provider={}, model={}, category={}{}, usage range {} to {}; run `tkstat --pricing-refresh` or `tkstat --pricing-seed`",
-            key.provider,
-            key.model_id,
-            key.category,
-            dimension_suffix(&key.dimensions),
-            format_utc_rfc3339(start),
-            format_utc_rfc3339(end)
-        );
-    }
-
-    let mut cursor = start;
-    let mut saw_covering_interval = false;
-    for (idx, (from, to)) in intervals.iter().enumerate() {
-        let from = parse_canonical_utc_rfc3339(from)?;
-        let to = to
-            .as_ref()
-            .map(|dt| parse_canonical_utc_rfc3339(dt))
-            .transpose()?;
-
-        if from > cursor {
-            bail!(
-                "missing pricing coverage for provider={}, model={}, category={}{}, gap {} to {}; run `tkstat --pricing-refresh` or `tkstat --pricing-seed`",
+            |row| row.get(0),
+        )?;
+        match matching_count {
+            0 => bail!(
+                "missing pricing coverage for provider={}, model={}, category={}{}, usage range {} to {}; no interval covers usage timestamp {}; run `tkstat --pricing-refresh` or `tkstat --pricing-seed`",
                 key.provider,
                 key.model_id,
                 key.category,
                 dimension_suffix(&key.dimensions),
-                format_utc_rfc3339(cursor),
-                format_utc_rfc3339(from)
-            );
-        }
-        if saw_covering_interval && from < cursor {
-            bail!(
+                format_utc_rfc3339(start),
+                format_utc_rfc3339(end),
+                format_utc_rfc3339(timestamp)
+            ),
+            1 => {}
+            _ => bail!(
                 "overlapping pricing intervals for provider={}, model={}, category={}{} near {}, usage range {} to {}",
                 key.provider,
                 key.model_id,
                 key.category,
                 dimension_suffix(&key.dimensions),
-                format_utc_rfc3339(from),
+                format_utc_rfc3339(timestamp),
                 format_utc_rfc3339(start),
                 format_utc_rfc3339(end)
-            );
-        }
-        saw_covering_interval = true;
-
-        match to {
-            Some(to) => {
-                if to > cursor {
-                    cursor = to;
-                }
-                if cursor > end {
-                    return Ok(());
-                }
-            }
-            None => {
-                if let Some((next_from, _)) = intervals.get(idx + 1) {
-                    bail!(
-                        "overlapping pricing intervals for provider={}, model={}, category={}{} near {}, usage range {} to {}",
-                        key.provider,
-                        key.model_id,
-                        key.category,
-                        dimension_suffix(&key.dimensions),
-                        next_from,
-                        format_utc_rfc3339(start),
-                        format_utc_rfc3339(end)
-                    );
-                }
-                return Ok(());
-            }
+            ),
         }
     }
 
-    bail!(
-        "missing pricing coverage for provider={}, model={}, category={}{}, gap {} to {}; run `tkstat --pricing-refresh` or `tkstat --pricing-seed`",
-        key.provider,
-        key.model_id,
-        key.category,
-        dimension_suffix(&key.dimensions),
-        format_utc_rfc3339(cursor),
-        format_utc_rfc3339(end)
-    )
+    Ok(())
 }
 
 fn dimension_suffix(dimensions: &PricingDimensions) -> String {
@@ -2190,6 +2121,157 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("overlapping pricing intervals"));
+    }
+
+    #[test]
+    fn test_query_coverage_ignores_unobserved_price_gaps() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_pricing_interval(&price(
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            10.0,
+            "2026-01-01T00:00:00Z",
+            Some("2026-02-01T00:00:00Z"),
+        ))
+        .unwrap();
+        db.insert_pricing_interval(&price(
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            10.0,
+            "2026-03-01T00:00:00Z",
+            None,
+        ))
+        .unwrap();
+        let mut before = make_record(
+            "before-gap",
+            "2026-01-15T10:00:00Z",
+            "opus",
+            "proj-a",
+            1_000_000,
+            0,
+        );
+        before.output_tokens = 0;
+        let mut after = make_record(
+            "after-gap",
+            "2026-03-15T10:00:00Z",
+            "opus",
+            "proj-a",
+            1_000_000,
+            0,
+        );
+        after.output_tokens = 0;
+        db.insert_records(&[before, after]).unwrap();
+
+        let summary = query_summary(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.cost_usd, 20.0);
+    }
+
+    #[test]
+    fn test_query_coverage_fails_for_observed_price_gap() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_pricing_interval(&price(
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            10.0,
+            "2026-01-01T00:00:00Z",
+            Some("2026-02-01T00:00:00Z"),
+        ))
+        .unwrap();
+        db.insert_pricing_interval(&price(
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            10.0,
+            "2026-03-01T00:00:00Z",
+            None,
+        ))
+        .unwrap();
+        let mut record = make_record(
+            "in-gap",
+            "2026-02-15T10:00:00Z",
+            "opus",
+            "proj-a",
+            1_000_000,
+            0,
+        );
+        record.output_tokens = 0;
+        db.insert_records(&[record]).unwrap();
+
+        let err = query_summary(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("missing pricing coverage"));
+        assert!(err.contains("usage timestamp 2026-02-15T10:00:00+00:00"));
+    }
+
+    #[test]
+    fn test_query_coverage_detects_dimension_specific_overlap() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_pricing_interval(&price(
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            10.0,
+            "2026-01-01T00:00:00Z",
+            None,
+        ))
+        .unwrap();
+        db.insert_pricing_interval(&with_speed(
+            price(
+                "claude-opus-4-6",
+                TokenCategory::Input,
+                20.0,
+                "2026-01-01T00:00:00Z",
+                None,
+            ),
+            "fast",
+        ))
+        .unwrap();
+        db.insert_pricing_interval(&with_speed(
+            price(
+                "claude-opus-4-6",
+                TokenCategory::Input,
+                30.0,
+                "2026-02-01T00:00:00Z",
+                None,
+            ),
+            "fast",
+        ))
+        .unwrap();
+        let mut record = make_record(
+            "fast",
+            "2026-04-05T10:00:00Z",
+            "opus",
+            "proj-a",
+            1_000_000,
+            0,
+        );
+        record.output_tokens = 0;
+        record.speed = Some("fast".into());
+        db.insert_records(&[record]).unwrap();
+
+        let err = query_summary(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("overlapping pricing intervals"));
+        assert!(err.contains("speed=fast"));
     }
 
     #[test]
