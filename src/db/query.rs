@@ -2324,7 +2324,7 @@ mod tests {
             "2026-01-01T00:00:00Z",
             None,
         );
-        interval.dimensions.service_tier = Some("standard".into());
+        interval.dimensions.service_tier = Some("priority".into());
         interval.dimensions.speed = Some("fast".into());
         interval.dimensions.region = Some("us".into());
         interval.source = "reviewed:explicit-source".into();
@@ -2339,7 +2339,7 @@ mod tests {
             0,
         );
         record.output_tokens = 0;
-        record.service_tier = Some("standard".into());
+        record.service_tier = Some("priority".into());
         record.speed = Some("fast".into());
         record.region = Some("us".into());
         db.insert_records(&[record]).unwrap();
@@ -2486,6 +2486,89 @@ mod tests {
         .to_string();
         assert!(err.contains("missing pricing coverage"));
         assert!(err.contains("speed=fast"));
+    }
+
+    #[test]
+    fn test_query_uses_default_pricing_for_claude_standard_modifiers() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_pricing().unwrap();
+        let mut record = make_record(
+            "haiku-standard",
+            "2026-04-05T10:00:00Z",
+            "haiku",
+            "proj-a",
+            0,
+            0,
+        );
+        record.model_id = "claude-haiku-4-5-20251001".into();
+        record.cache_read_tokens = 1_000_000;
+        record.service_tier = Some("standard".into());
+        record.speed = Some("standard".into());
+        db.insert_records(&[record]).unwrap();
+
+        let summary = query_summary(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!((summary.cost_usd - 0.1).abs() < 0.000001);
+    }
+
+    #[test]
+    fn test_query_preserves_fail_closed_for_claude_fast_modifier() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_pricing().unwrap();
+        let mut record = make_record(
+            "haiku-fast",
+            "2026-04-05T10:00:00Z",
+            "haiku",
+            "proj-a",
+            0,
+            0,
+        );
+        record.model_id = "claude-haiku-4-5-20251001".into();
+        record.cache_read_tokens = 1_000_000;
+        record.service_tier = Some("standard".into());
+        record.speed = Some("fast".into());
+        db.insert_records(&[record]).unwrap();
+
+        let err = query_summary(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("missing pricing coverage"));
+        assert!(err.contains("speed=fast"));
+
+        db.insert_pricing_interval(&with_speed(
+            price(
+                "claude-haiku-4-5-20251001",
+                TokenCategory::CacheRead,
+                0.2,
+                "2026-01-01T00:00:00Z",
+                None,
+            ),
+            "fast",
+        ))
+        .unwrap();
+
+        let summary = query_summary(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!((summary.cost_usd - 0.2).abs() < 0.000001);
     }
 
     #[test]

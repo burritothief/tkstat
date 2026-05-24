@@ -113,6 +113,15 @@ impl PricingDimensions {
             processing_mode: component.processing_mode.clone(),
             source_detail: component.source_detail.clone(),
         }
+        .normalized_for_provider(component.provider)
+    }
+
+    pub fn normalized_for_provider(mut self, provider: ProviderId) -> Self {
+        if provider == ProviderId::ClaudeCode {
+            self.service_tier = normalize_claude_default_modifier(self.service_tier);
+            self.speed = normalize_claude_default_modifier(self.speed);
+        }
+        self
     }
 
     pub fn is_default(&self) -> bool {
@@ -312,18 +321,38 @@ fn component(
     tokens: u64,
     source_detail: Option<&str>,
 ) -> BillableUsageComponent {
+    let service_tier = if record.provider == ProviderId::ClaudeCode {
+        normalize_claude_default_modifier(record.service_tier.clone())
+    } else {
+        record.service_tier.clone()
+    };
+    let speed = if record.provider == ProviderId::ClaudeCode {
+        normalize_claude_default_modifier(record.speed.clone())
+    } else {
+        record.speed.clone()
+    };
     BillableUsageComponent {
         provider: record.provider,
         model_id: record.model_id.clone(),
         timestamp: record.timestamp,
         token_category,
         tokens,
-        service_tier: record.service_tier.clone(),
-        speed: record.speed.clone(),
+        service_tier,
+        speed,
         region: record.region.clone(),
         processing_mode: record.processing_mode.clone(),
         source_detail: source_detail.map(str::to_string),
     }
+}
+
+fn normalize_claude_default_modifier(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        if value.trim().eq_ignore_ascii_case("standard") {
+            None
+        } else {
+            Some(value)
+        }
+    })
 }
 
 pub fn billable_token_categories_for_counts(
@@ -595,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn test_claude_cache_creation_components_preserve_ttl_and_request_modifiers() {
+    fn test_claude_cache_creation_components_preserve_ttl_and_non_default_request_modifiers() {
         let record = TokenRecord {
             provider: ProviderId::ClaudeCode,
             request_id: "claude-r1".into(),
@@ -635,10 +664,48 @@ mod tests {
                 && component.source_detail.as_deref() == Some("ephemeral_1h")
         }));
         assert!(components.iter().all(|component| {
-            component.service_tier.as_deref() == Some("standard")
+            component.service_tier.is_none()
                 && component.speed.as_deref() == Some("fast")
                 && component.region.as_deref() == Some("us")
         }));
+    }
+
+    #[test]
+    fn test_claude_standard_service_tier_and_speed_normalize_to_default_dimensions() {
+        let record = TokenRecord {
+            provider: ProviderId::ClaudeCode,
+            request_id: "claude-r1".into(),
+            session_id: "claude-s1".into(),
+            uuid: "claude-u1".into(),
+            timestamp: "2026-04-07T10:00:00Z".parse().unwrap(),
+            model: ModelFamily::Haiku,
+            model_id: "claude-haiku-4-5-20251001".into(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 40,
+            cached_input_tokens: 0,
+            reasoning_output_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            service_tier: Some("standard".into()),
+            speed: Some("standard".into()),
+            region: None,
+            processing_mode: None,
+            cost_usd: 0.0,
+            project: "demo".into(),
+            source_file: "/tmp/claude.jsonl".into(),
+            is_subagent: false,
+        };
+
+        let components = billable_usage_components(&record);
+        assert_eq!(components.len(), 1);
+        let component = &components[0];
+        assert_eq!(component.token_category, TokenCategory::CacheRead);
+        assert_eq!(component.tokens, 40);
+        assert!(component.service_tier.is_none());
+        assert!(component.speed.is_none());
+        assert!(PricingDimensions::from_component(component).is_default());
     }
 
     #[test]

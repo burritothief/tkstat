@@ -68,6 +68,75 @@ fn test_pricing_failure_without_seed_then_seed_remediates_json_report() {
 }
 
 #[test]
+fn test_seeded_pricing_covers_claude_standard_modifiers() {
+    let root = temp_root("pricing-claude-standard-modifiers");
+    let projects = root.join("claude").join("projects");
+    let project_dir = projects.join("-home-tester-work-standard-modifiers");
+    fs::create_dir_all(&project_dir).unwrap();
+    fs::write(
+        project_dir.join("main.jsonl"),
+        r#"{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":1000000,"output_tokens":0,"service_tier":"standard","speed":"standard"}},"requestId":"standard-modifiers","uuid":"standard-modifiers-uuid","timestamp":"2026-04-07T10:00:00Z","sessionId":"standard-session"}"#,
+    )
+    .unwrap();
+    let db = root.join("tkstat.db");
+
+    let seed = run_tkstat(
+        &root,
+        [
+            "--pricing-seed",
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+        ],
+    );
+    assert_success(&seed);
+
+    let report = run_tkstat(
+        &root,
+        [
+            "--provider",
+            "claude-code",
+            "--model",
+            "claude-haiku-4-5-20251001",
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+            "--force-update",
+            "--by-model",
+            "--json",
+        ],
+    );
+    assert_success(&report);
+    assert_no_pricing_coverage_error(&report);
+    let json = parse_stdout_json(&report);
+    let row = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["model_id"] == "claude-haiku-4-5-20251001")
+        .unwrap();
+    assert_eq!(row["cache_read_tokens"], serde_json::json!(1_000_000));
+    assert_eq!(row["cost_usd"], serde_json::json!(0.1));
+
+    let conn = Connection::open(&db).unwrap();
+    let dimensions: (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT service_tier, speed
+             FROM usage_billing_components
+             WHERE request_id = 'standard-modifiers' AND token_category = 'cache_read'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(dimensions, (None, None));
+    drop(conn);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn test_incomplete_seeded_pricing_failure_then_reseed_repairs_csv_report() {
     let root = temp_root("pricing-incomplete-remediation-csv");
     let projects = make_claude_corpus_fixture(&root);
