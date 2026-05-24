@@ -137,6 +137,86 @@ fn test_seeded_pricing_covers_claude_standard_modifiers() {
 }
 
 #[test]
+fn test_seeded_pricing_covers_claude_cache_creation_ttl_dimensions() {
+    let root = temp_root("pricing-claude-cache-creation-ttl");
+    let projects = root.join("claude").join("projects");
+    let project_dir = projects.join("-home-tester-work-cache-ttl");
+    fs::create_dir_all(&project_dir).unwrap();
+    fs::write(
+        project_dir.join("main.jsonl"),
+        r#"{"type":"assistant","message":{"model":"claude-sonnet-4-5-20250929","usage":{"input_tokens":0,"cache_creation_input_tokens":2000000,"cache_creation":{"ephemeral_5m_input_tokens":1000000,"ephemeral_1h_input_tokens":1000000},"cache_read_input_tokens":0,"output_tokens":0}},"requestId":"cache-ttl","uuid":"cache-ttl-uuid","timestamp":"2026-01-31T21:37:42.435Z","sessionId":"cache-ttl-session"}"#,
+    )
+    .unwrap();
+    let db = root.join("tkstat.db");
+
+    let seed = run_tkstat(
+        &root,
+        [
+            "--pricing-seed",
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+        ],
+    );
+    assert_success(&seed);
+
+    let report = run_tkstat(
+        &root,
+        [
+            "--provider",
+            "claude",
+            "--model",
+            "claude-sonnet-4-5-20250929",
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+            "--force-update",
+            "--by-model",
+            "--json",
+        ],
+    );
+    assert_success(&report);
+    assert_no_pricing_coverage_error(&report);
+    let json = parse_stdout_json(&report);
+    let row = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["model_id"] == "claude-sonnet-4-5-20250929")
+        .unwrap();
+    assert_eq!(row["cache_creation_tokens"], serde_json::json!(2_000_000));
+    assert_eq!(row["cost_usd"], serde_json::json!(9.75));
+
+    let conn = Connection::open(&db).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT source_detail, tokens
+             FROM usage_billing_components
+             WHERE request_id = 'cache-ttl' AND token_category = 'cache_creation'
+             ORDER BY source_detail",
+        )
+        .unwrap();
+    let rows: Vec<(Option<String>, i64)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            (Some("ephemeral_1h".into()), 1_000_000),
+            (Some("ephemeral_5m".into()), 1_000_000),
+        ]
+    );
+    drop(stmt);
+    drop(conn);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn test_incomplete_seeded_pricing_failure_then_reseed_repairs_csv_report() {
     let root = temp_root("pricing-incomplete-remediation-csv");
     let projects = make_claude_corpus_fixture(&root);
@@ -181,7 +261,7 @@ fn test_incomplete_seeded_pricing_failure_then_reseed_repairs_csv_report() {
             [],
         )
         .unwrap();
-    assert_eq!(deleted, 1);
+    assert_eq!(deleted, 3);
     drop(conn);
 
     let missing = run_tkstat(&root, report_args);
@@ -207,7 +287,7 @@ fn test_incomplete_seeded_pricing_failure_then_reseed_repairs_csv_report() {
         ],
     );
     assert_success(&reseed);
-    assert!(String::from_utf8_lossy(&reseed.stdout).contains("seeded 1 pricing intervals"));
+    assert!(String::from_utf8_lossy(&reseed.stdout).contains("seeded 3 pricing intervals"));
 
     let repaired = run_tkstat(&root, report_args);
     assert_success(&repaired);
