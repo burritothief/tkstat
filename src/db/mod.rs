@@ -120,8 +120,11 @@ impl Database {
     }
 
     pub fn reset(&self) -> Result<()> {
-        self.conn
-            .execute_batch("DELETE FROM token_usage; DELETE FROM file_state;")?;
+        self.conn.execute_batch(
+            "DELETE FROM usage_billing_components;
+             DELETE FROM token_usage;
+             DELETE FROM file_state;",
+        )?;
         Ok(())
     }
 }
@@ -272,6 +275,26 @@ mod tests {
     fn test_reset_clears_data() {
         let db = Database::open_in_memory().unwrap();
         let path = PathBuf::from("/test/file.jsonl");
+        db.insert_records(&[TokenRecord {
+            provider: crate::domain::provider::ProviderId::ClaudeCode,
+            request_id: "reset-r1".into(),
+            session_id: "reset-s1".into(),
+            uuid: "reset-u1".into(),
+            timestamp: "2026-04-07T10:00:00+00:00".parse().unwrap(),
+            model: crate::domain::usage::ModelFamily::Opus,
+            model_id: "claude-opus-4-6".into(),
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_creation_tokens: 30,
+            cache_read_tokens: 40,
+            cached_input_tokens: 0,
+            reasoning_output_tokens: 0,
+            cost_usd: 0.0,
+            project: "test".into(),
+            source_file: "/test/file.jsonl".into(),
+            is_subagent: false,
+        }])
+        .unwrap();
         db.update_file_state(
             crate::domain::provider::ProviderId::ClaudeCode,
             &path,
@@ -286,6 +309,18 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        let usage_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM token_usage", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(usage_count, 0);
+        let component_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM usage_billing_components", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(component_count, 0);
     }
 
     #[test]

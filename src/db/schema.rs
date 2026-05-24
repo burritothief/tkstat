@@ -1,7 +1,12 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 8;
+use crate::domain::pricing::billable_usage_components;
+use crate::domain::provider::ProviderId;
+use crate::domain::timestamp::parse_canonical_utc_rfc3339;
+use crate::domain::usage::{ModelFamily, TokenRecord};
+
+pub const SCHEMA_VERSION: i64 = 9;
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -23,19 +28,34 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
 
     match current {
         Some(v) if v >= SCHEMA_VERSION => {}
+        Some(v) if v >= 8 => {
+            eprintln!(
+                "tkstat database schema {v} is older than {SCHEMA_VERSION}; adding normalized billing components for existing usage rows."
+            );
+            create_tables(&tx)?;
+            migrate_provider_ids(&tx)?;
+            backfill_usage_billing_components(&tx)?;
+            set_version(&tx, SCHEMA_VERSION)?;
+        }
         Some(v) => {
             eprintln!(
                 "tkstat database schema {v} is older than {SCHEMA_VERSION}; rebuilding usage cache. Run `tkstat --force-update` if you need to force a clean reingest, and run `tkstat --pricing-seed` or `tkstat --pricing-refresh` if pricing is missing."
             );
             // Drop old tables and recreate (pre-1.0, no migration path needed)
-            tx.execute_batch("DROP TABLE IF EXISTS token_usage; DROP TABLE IF EXISTS file_state;")?;
+            tx.execute_batch(
+                "DROP TABLE IF EXISTS usage_billing_components;
+                 DROP TABLE IF EXISTS token_usage;
+                 DROP TABLE IF EXISTS file_state;",
+            )?;
             create_tables(&tx)?;
             migrate_provider_ids(&tx)?;
+            backfill_usage_billing_components(&tx)?;
             set_version(&tx, SCHEMA_VERSION)?;
         }
         None => {
             create_tables(&tx)?;
             migrate_provider_ids(&tx)?;
+            backfill_usage_billing_components(&tx)?;
             set_version(&tx, SCHEMA_VERSION)?;
         }
     }
@@ -90,6 +110,29 @@ fn create_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_usage_session ON token_usage(session_id);
         CREATE INDEX IF NOT EXISTS idx_usage_project ON token_usage(project);
 
+        CREATE TABLE IF NOT EXISTS usage_billing_components (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            usage_id            INTEGER NOT NULL,
+            provider            TEXT NOT NULL CHECK(provider IN ('claude-code', 'codex')),
+            request_id          TEXT NOT NULL CHECK(request_id <> ''),
+            model_id            TEXT NOT NULL CHECK(model_id <> ''),
+            timestamp           TEXT NOT NULL CHECK(timestamp <> ''),
+            token_category      TEXT NOT NULL CHECK(token_category <> ''),
+            tokens              INTEGER NOT NULL CHECK(tokens > 0),
+            service_tier        TEXT,
+            speed               TEXT,
+            region              TEXT,
+            processing_mode     TEXT,
+            source_detail       TEXT,
+            component_ordinal   INTEGER NOT NULL,
+            UNIQUE(provider, request_id, component_ordinal)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_billing_components_usage
+            ON usage_billing_components(provider, request_id);
+        CREATE INDEX IF NOT EXISTS idx_billing_components_lookup
+            ON usage_billing_components(provider, model_id, token_category, timestamp);
+
         CREATE TABLE IF NOT EXISTS file_state (
             id                INTEGER PRIMARY KEY AUTOINCREMENT,
             provider          TEXT NOT NULL CHECK(provider IN ('claude-code', 'codex')),
@@ -121,6 +164,95 @@ fn create_tables(conn: &Connection) -> Result<()> {
             ON pricing_intervals(provider, model_id);",
     )?;
     Ok(())
+}
+
+fn backfill_usage_billing_components(conn: &Connection) -> Result<()> {
+    conn.execute("DELETE FROM usage_billing_components", [])?;
+    let rows = {
+        let mut stmt = conn.prepare(
+            "SELECT id, provider, request_id, session_id, uuid, timestamp, model_family, model_id,
+                    input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+                    cached_input_tokens, reasoning_output_tokens, cost_usd, project, source_file, is_subagent
+             FROM token_usage
+             ORDER BY id ASC",
+        )?;
+        stmt.query_map([], row_to_token_record)?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    let mut insert = conn.prepare_cached(
+        "INSERT INTO usage_billing_components
+            (usage_id, provider, request_id, model_id, timestamp, token_category, tokens,
+             service_tier, speed, region, processing_mode, source_detail, component_ordinal)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+    )?;
+    for (usage_id, record) in rows {
+        insert_billing_components(&mut insert, usage_id, &record)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn insert_billing_components(
+    stmt: &mut rusqlite::CachedStatement<'_>,
+    usage_id: i64,
+    record: &TokenRecord,
+) -> Result<()> {
+    for (idx, component) in billable_usage_components(record).into_iter().enumerate() {
+        stmt.execute(rusqlite::params![
+            usage_id,
+            component.provider.as_str(),
+            record.request_id,
+            component.model_id,
+            crate::domain::timestamp::format_utc_rfc3339(component.timestamp),
+            component.token_category.as_str(),
+            crate::db::u64_to_sql_i64("billing component tokens", component.tokens)?,
+            component.service_tier,
+            component.speed,
+            component.region,
+            component.processing_mode,
+            component.source_detail,
+            idx as i64,
+        ])?;
+    }
+    Ok(())
+}
+
+fn row_to_token_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<(i64, TokenRecord)> {
+    let provider: String = row.get(1)?;
+    let timestamp: String = row.get(5)?;
+    let model_family: String = row.get(6)?;
+    let provider = ProviderId::from_canonical(&provider).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            1,
+            rusqlite::types::Type::Text,
+            format!("unsupported provider id '{provider}'").into(),
+        )
+    })?;
+    let timestamp = parse_canonical_utc_rfc3339(&timestamp).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, err.into())
+    })?;
+    Ok((
+        row.get(0)?,
+        TokenRecord {
+            provider,
+            request_id: row.get(2)?,
+            session_id: row.get(3)?,
+            uuid: row.get(4)?,
+            timestamp,
+            model: model_family.parse().unwrap_or(ModelFamily::Unknown),
+            model_id: row.get(7)?,
+            input_tokens: row.get::<_, i64>(8)?.max(0) as u64,
+            output_tokens: row.get::<_, i64>(9)?.max(0) as u64,
+            cache_creation_tokens: row.get::<_, i64>(10)?.max(0) as u64,
+            cache_read_tokens: row.get::<_, i64>(11)?.max(0) as u64,
+            cached_input_tokens: row.get::<_, i64>(12)?.max(0) as u64,
+            reasoning_output_tokens: row.get::<_, i64>(13)?.max(0) as u64,
+            cost_usd: row.get(14)?,
+            project: row.get(15)?,
+            source_file: row.get(16)?,
+            is_subagent: row.get::<_, i64>(17)? != 0,
+        },
+    ))
 }
 
 fn set_version(conn: &Connection, version: i64) -> Result<()> {
@@ -184,6 +316,125 @@ mod tests {
             )
             .unwrap();
         assert_eq!(pricing_exists, 1);
+    }
+
+    #[test]
+    fn test_schema_v8_backfills_billing_components_without_losing_display_totals() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (8);
+             CREATE TABLE token_usage (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider            TEXT NOT NULL CHECK(provider IN ('claude-code', 'codex')),
+                request_id          TEXT NOT NULL,
+                session_id          TEXT NOT NULL,
+                uuid                TEXT NOT NULL,
+                timestamp           TEXT NOT NULL,
+                model_family        TEXT NOT NULL,
+                model_id            TEXT NOT NULL,
+                input_tokens        INTEGER NOT NULL,
+                output_tokens       INTEGER NOT NULL,
+                cache_creation_tokens  INTEGER NOT NULL,
+                cache_read_tokens   INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens        INTEGER GENERATED ALWAYS AS
+                    (input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) STORED,
+                cost_usd            REAL NOT NULL,
+                project             TEXT NOT NULL,
+                source_file         TEXT NOT NULL,
+                is_subagent         INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(provider, request_id)
+             );
+             CREATE TABLE file_state (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider          TEXT NOT NULL CHECK(provider IN ('claude-code', 'codex')),
+                path              TEXT NOT NULL,
+                size_bytes        INTEGER NOT NULL,
+                mtime_secs        INTEGER NOT NULL,
+                last_byte_offset  INTEGER NOT NULL,
+                last_ingested_at  TEXT NOT NULL,
+                UNIQUE(provider, path)
+             );
+             INSERT INTO token_usage
+                (provider, request_id, session_id, uuid, timestamp, model_family, model_id,
+                 input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+                 cached_input_tokens, reasoning_output_tokens, cost_usd, project, source_file, is_subagent)
+             VALUES
+                ('claude-code', 'claude-r', 's1', 'u1', '2026-04-07T10:00:00+00:00',
+                 'opus', 'claude-opus-4-6', 10, 20, 30, 40, 0, 0, 0.0, 'project', '/claude.jsonl', 0),
+                ('codex', 'codex-r', 's2', 'u2', '2026-05-24T00:40:04+00:00',
+                 'unknown', 'gpt-5.5', 100, 20, 0, 0, 40, 7, 0.0, 'project', '/codex.jsonl', 0);",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+
+        let (usage_count, display_total): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), SUM(total_tokens) FROM token_usage",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(usage_count, 2);
+        assert_eq!(display_total, 220);
+
+        let component_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM usage_billing_components", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(component_count, 7);
+
+        let claude_components: Vec<(String, i64)> = conn
+            .prepare(
+                "SELECT token_category, tokens
+                 FROM usage_billing_components
+                 WHERE provider = 'claude-code' AND request_id = 'claude-r'
+                 ORDER BY component_ordinal",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            claude_components,
+            vec![
+                ("input".into(), 10),
+                ("output".into(), 20),
+                ("cache_read".into(), 40),
+                ("cache_creation".into(), 30),
+            ]
+        );
+
+        let codex_components: Vec<(String, i64)> = conn
+            .prepare(
+                "SELECT token_category, tokens
+                 FROM usage_billing_components
+                 WHERE provider = 'codex' AND request_id = 'codex-r'
+                 ORDER BY component_ordinal",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            codex_components,
+            vec![
+                ("input".into(), 60),
+                ("output".into(), 20),
+                ("cached_input".into(), 40),
+            ]
+        );
     }
 
     #[test]
@@ -419,6 +670,47 @@ mod tests {
     }
 
     #[test]
+    fn test_usage_billing_components_schema_present_and_indexed() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(usage_billing_components)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        for column in [
+            "usage_id",
+            "provider",
+            "request_id",
+            "model_id",
+            "timestamp",
+            "token_category",
+            "tokens",
+            "service_tier",
+            "speed",
+            "region",
+            "processing_mode",
+            "source_detail",
+            "component_ordinal",
+        ] {
+            assert!(columns.contains(&column.to_string()), "missing {column}");
+        }
+
+        let indexes: Vec<String> = conn
+            .prepare("PRAGMA index_list(usage_billing_components)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(indexes.contains(&"idx_billing_components_usage".to_string()));
+        assert!(indexes.contains(&"idx_billing_components_lookup".to_string()));
+    }
+
+    #[test]
     fn test_new_schema_rejects_unsupported_provider_ids() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
@@ -458,5 +750,16 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(pricing_err.contains("CHECK"));
+
+        let component_err = conn
+            .execute(
+                "INSERT INTO usage_billing_components
+                    (usage_id, provider, request_id, model_id, timestamp, token_category, tokens, component_ordinal)
+                 VALUES (1, 'bogus', 'r1', 'm1', '2026-04-07T10:00:00+00:00', 'input', 1, 0)",
+                [],
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(component_err.contains("CHECK"));
     }
 }

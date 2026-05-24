@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension};
 
+use crate::db::schema::insert_billing_components;
 use crate::db::{ensure_non_empty, u64_to_sql_i64};
 use crate::domain::timestamp::format_utc_rfc3339;
 use crate::domain::usage::TokenRecord;
@@ -26,6 +27,12 @@ pub fn batch_insert(conn: &Connection, records: &[TokenRecord]) -> Result<usize>
                  cached_input_tokens, reasoning_output_tokens,
                  cost_usd, project, source_file, is_subagent)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+        )?;
+        let mut component_stmt = tx.prepare_cached(
+            "INSERT INTO usage_billing_components
+                (usage_id, provider, request_id, model_id, timestamp, token_category, tokens,
+                 service_tier, speed, region, processing_mode, source_detail, component_ordinal)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         )?;
 
         for r in records {
@@ -59,6 +66,8 @@ pub fn batch_insert(conn: &Connection, records: &[TokenRecord]) -> Result<usize>
                 r.source_file,
                 r.is_subagent as i32,
             ])?;
+            let usage_id = tx.last_insert_rowid();
+            insert_billing_components(&mut component_stmt, usage_id, r)?;
             inserted += changed;
         }
     }
@@ -118,6 +127,14 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM token_usage", [], |row| row.get(0))
             .unwrap();
         assert_eq!(total, 2);
+
+        let components: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM usage_billing_components", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(components, 8);
     }
 
     #[test]
@@ -126,6 +143,13 @@ mod tests {
         let records = vec![make_record("r1", 10)];
         assert_eq!(db.insert_records(&records).unwrap(), 1);
         assert_eq!(db.insert_records(&records).unwrap(), 0);
+        let components: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM usage_billing_components", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(components, 4);
     }
 
     #[test]
@@ -151,6 +175,73 @@ mod tests {
         assert_eq!(model_id, "claude-opus-4-6");
         assert_eq!(output, 42);
         assert!((cost - 0.05).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_inserted_billing_components_match_claude_display_record() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_records(&[make_record("r1", 42)]).unwrap();
+
+        let rows: Vec<(String, i64)> = db
+            .conn()
+            .prepare(
+                "SELECT token_category, tokens
+                 FROM usage_billing_components
+                 WHERE provider = 'claude-code' AND request_id = 'r1'
+                 ORDER BY component_ordinal",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("input".into(), 10),
+                ("output".into(), 42),
+                ("cache_read".into(), 500),
+                ("cache_creation".into(), 100),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_inserted_billing_components_match_codex_non_overlapping_billing() {
+        let db = Database::open_in_memory().unwrap();
+        let mut record = make_record("codex", 20);
+        record.provider = crate::domain::provider::ProviderId::Codex;
+        record.model = ModelFamily::Unknown;
+        record.model_id = "gpt-5.5".into();
+        record.input_tokens = 100;
+        record.output_tokens = 20;
+        record.cache_creation_tokens = 0;
+        record.cache_read_tokens = 0;
+        record.cached_input_tokens = 40;
+        record.reasoning_output_tokens = 7;
+        db.insert_records(&[record]).unwrap();
+
+        let rows: Vec<(String, i64)> = db
+            .conn()
+            .prepare(
+                "SELECT token_category, tokens
+                 FROM usage_billing_components
+                 WHERE provider = 'codex' AND request_id = 'codex'
+                 ORDER BY component_ordinal",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("input".into(), 60),
+                ("output".into(), 20),
+                ("cached_input".into(), 40),
+            ]
+        );
     }
 
     #[test]
