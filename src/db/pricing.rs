@@ -643,6 +643,13 @@ pub fn calculate_record_cost(conn: &Connection, record: &TokenRecord) -> Result<
 }
 
 pub fn audit_pricing(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
+    audit_pricing_at(conn, Utc::now().date_naive())
+}
+
+fn audit_pricing_at(
+    conn: &Connection,
+    reference_date: NaiveDate,
+) -> Result<Vec<PricingAuditFinding>> {
     if !table_exists(conn, "pricing_intervals")? {
         return Ok(vec![schema_finding(
             PricingAuditKind::MissingSchema,
@@ -654,7 +661,7 @@ pub fn audit_pricing(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
     if table_exists(conn, "token_usage")? {
         findings.extend(audit_billing_component_integrity(conn)?);
         findings.extend(audit_usage_coverage(conn)?);
-        findings.extend(audit_usage_source_quality(conn)?);
+        findings.extend(audit_usage_source_quality(conn, reference_date)?);
     } else {
         findings.push(schema_finding(
             PricingAuditKind::MissingSchema,
@@ -851,7 +858,10 @@ fn audit_component_token_totals(conn: &Connection) -> Result<Vec<PricingAuditFin
     Ok(findings)
 }
 
-fn audit_usage_source_quality(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
+fn audit_usage_source_quality(
+    conn: &Connection,
+    reference_date: NaiveDate,
+) -> Result<Vec<PricingAuditFinding>> {
     if !table_exists(conn, "usage_billing_components")?
         || table_row_count(conn, "usage_billing_components")? == 0
     {
@@ -861,7 +871,7 @@ fn audit_usage_source_quality(conn: &Connection) -> Result<Vec<PricingAuditFindi
     let mut findings = Vec::new();
     findings.extend(audit_unknown_observed_models(conn)?);
     findings.extend(audit_unsupported_modifiers(conn)?);
-    findings.extend(audit_used_pricing_sources(conn)?);
+    findings.extend(audit_used_pricing_sources(conn, reference_date)?);
     Ok(findings)
 }
 
@@ -956,9 +966,12 @@ fn audit_unsupported_modifiers(conn: &Connection) -> Result<Vec<PricingAuditFind
     Ok(findings)
 }
 
-fn audit_used_pricing_sources(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
+fn audit_used_pricing_sources(
+    conn: &Connection,
+    reference_date: NaiveDate,
+) -> Result<Vec<PricingAuditFinding>> {
     if table_exists(conn, "pricing_sources")? {
-        audit_used_pricing_sources_with_metadata(conn)
+        audit_used_pricing_sources_with_metadata(conn, reference_date)
     } else {
         audit_used_pricing_sources_without_metadata(conn)
     }
@@ -1008,8 +1021,11 @@ fn audit_used_pricing_sources_without_metadata(
         .collect())
 }
 
-fn audit_used_pricing_sources_with_metadata(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
-    let cutoff = Utc::now().date_naive() - Duration::days(SOURCE_STALE_AFTER_DAYS);
+fn audit_used_pricing_sources_with_metadata(
+    conn: &Connection,
+    reference_date: NaiveDate,
+) -> Result<Vec<PricingAuditFinding>> {
+    let cutoff = stale_source_cutoff(reference_date);
     let mut stmt = conn.prepare(
         "SELECT DISTINCT c.provider, c.model_id, c.token_category, p.effective_from,
                 p.effective_to, p.source, s.source_url, s.source_retrieved_at,
@@ -1110,6 +1126,10 @@ fn audit_used_pricing_sources_with_metadata(conn: &Connection) -> Result<Vec<Pri
         }
     }
     Ok(findings)
+}
+
+fn stale_source_cutoff(reference_date: NaiveDate) -> NaiveDate {
+    reference_date - Duration::days(SOURCE_STALE_AFTER_DAYS)
 }
 
 fn audit_catalog(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
@@ -2426,6 +2446,33 @@ mod tests {
         }
     }
 
+    fn stale_audit_finding_present_for_retrieved_at(retrieved_at: &str) -> bool {
+        let db = Database::open_in_memory().unwrap();
+        let source = format!("reviewed:boundary-{retrieved_at}");
+        let mut price = interval(TokenCategory::Input, 10.0, "2026-01-01T00:00:00Z", None);
+        price.source = source.clone();
+        insert_interval(db.conn(), &price).unwrap();
+        upsert_source_metadata(
+            db.conn(),
+            &source_metadata(&source, retrieved_at, "reviewed"),
+        )
+        .unwrap();
+
+        let mut usage = record("claude-opus-4-6");
+        usage.output_tokens = 0;
+        db.insert_records(&[usage]).unwrap();
+
+        let findings =
+            audit_pricing_at(db.conn(), NaiveDate::from_ymd_opt(2026, 5, 24).unwrap()).unwrap();
+        findings.iter().any(|finding| {
+            finding.kind == PricingAuditKind::StaleSource
+                && finding.provider == "claude-code"
+                && finding.model_id == "claude-opus-4-6"
+                && finding.token_category == "input"
+                && finding.remediation.contains(&source)
+        })
+    }
+
     #[test]
     fn test_insert_and_select_applicable_price() {
         let db = Database::open_in_memory().unwrap();
@@ -3471,6 +3518,22 @@ mod tests {
                 && finding.token_category == "input"
                 && finding.remediation.contains("reviewed:old-source")
         }));
+    }
+
+    #[test]
+    fn test_pricing_audit_stale_source_boundary_uses_reference_date() {
+        assert!(
+            !stale_audit_finding_present_for_retrieved_at("2026-02-23"),
+            "retrieval date exactly at the 90-day cutoff should not be stale"
+        );
+        assert!(
+            stale_audit_finding_present_for_retrieved_at("2026-02-22"),
+            "retrieval date just before the 90-day cutoff should be stale"
+        );
+        assert!(
+            !stale_audit_finding_present_for_retrieved_at("2026-02-24"),
+            "retrieval date just after the 90-day cutoff should not be stale"
+        );
     }
 
     #[test]
