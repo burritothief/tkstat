@@ -630,6 +630,135 @@ fn test_pricing_audit_json_reports_missing_coverage_and_exits_nonzero() {
 }
 
 #[test]
+fn test_pricing_audit_json_reports_machine_readable_freshness_findings() {
+    let root = temp_root("pricing-audit-source-freshness-json");
+    fs::create_dir_all(&root).unwrap();
+    let projects = root.join("empty-projects");
+    fs::create_dir_all(&projects).unwrap();
+    let db = root.join("tkstat.db");
+    let database = Database::open(&db).unwrap();
+    let mut interval = PricingInterval::usd(
+        tkstat::domain::provider::ProviderId::ClaudeCode,
+        "claude-opus-4-6",
+        TokenCategory::Input,
+        10.0,
+        "2026-01-01T00:00:00Z".parse().unwrap(),
+        "reviewed:old-source",
+    );
+    interval.effective_to = None;
+    database.insert_pricing_interval(&interval).unwrap();
+    tkstat::db::pricing::upsert_source_metadata(
+        database.conn(),
+        &tkstat::db::pricing::PricingSourceMetadata {
+            source: "reviewed:old-source".into(),
+            source_url: "https://example.com/pricing".into(),
+            source_retrieved_at: "2025-01-01".into(),
+            catalog_version: "1".into(),
+            source_kind: "reviewed".into(),
+            notes: "reviewed stale test source".into(),
+        },
+    )
+    .unwrap();
+    database
+        .insert_records(&[cli_claude_record("freshness-r1", "2026-04-07T10:00:00Z")])
+        .unwrap();
+    drop(database);
+
+    let output = run_tkstat(
+        &root,
+        [
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+            "--pricing-audit",
+            "--json",
+        ],
+    );
+    assert_success(&output);
+    let json = parse_stdout_json(&output);
+    let findings = json.as_array().unwrap();
+    assert!(findings.iter().any(|finding| {
+        finding["kind"] == "StaleSource"
+            && finding["severity"] == "Warning"
+            && finding["provider"] == "claude-code"
+            && finding["model_id"] == "claude-opus-4-6"
+            && finding["token_category"] == "input"
+            && finding["remediation"]
+                .as_str()
+                .unwrap()
+                .contains("reviewed:old-source")
+    }));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn test_cost_reports_do_not_fail_for_source_quality_warnings() {
+    let root = temp_root("pricing-source-quality-cost-report");
+    fs::create_dir_all(&root).unwrap();
+    let projects = root.join("empty-projects");
+    fs::create_dir_all(&projects).unwrap();
+    let db = root.join("tkstat.db");
+    let database = Database::open(&db).unwrap();
+    let interval = PricingInterval::usd(
+        tkstat::domain::provider::ProviderId::ClaudeCode,
+        "claude-opus-4-6",
+        TokenCategory::Input,
+        10.0,
+        "2026-01-01T00:00:00Z".parse().unwrap(),
+        "reviewed:old-source",
+    );
+    database.insert_pricing_interval(&interval).unwrap();
+    tkstat::db::pricing::upsert_source_metadata(
+        database.conn(),
+        &tkstat::db::pricing::PricingSourceMetadata {
+            source: "reviewed:old-source".into(),
+            source_url: "https://example.com/pricing".into(),
+            source_retrieved_at: "2025-01-01".into(),
+            catalog_version: "1".into(),
+            source_kind: "reviewed".into(),
+            notes: "reviewed stale test source".into(),
+        },
+    )
+    .unwrap();
+    database
+        .insert_records(&[cli_claude_record(
+            "source-quality-r1",
+            "2026-04-07T10:00:00Z",
+        )])
+        .unwrap();
+    drop(database);
+
+    let output = run_tkstat(
+        &root,
+        [
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+            "--provider",
+            "claude",
+            "--json",
+            "-d",
+        ],
+    );
+    assert_success(&output);
+    assert_no_pricing_coverage_error(&output);
+    let json = parse_stdout_json(&output);
+    let cost = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["period"] == "2026-04-07")
+        .and_then(|row| row["cost_usd"].as_f64())
+        .unwrap();
+    assert_eq!(cost, 10.0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn test_pricing_audit_json_reports_unsupported_usage_provider_without_aborting() {
     let root = temp_root("pricing-audit-unsupported-provider");
     fs::create_dir_all(&root).unwrap();

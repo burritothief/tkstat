@@ -578,6 +578,7 @@ fn test_doctor_reports_healthy_claude_only_state() {
     assert!(stdout.contains("claude-code: available"));
     assert!(stdout.contains("usage rows: 3"));
     assert!(stdout.contains("status: available"));
+    assert!(stdout.contains("BundledFallbackSource"));
 
     let json = run_tkstat(
         &root,
@@ -594,6 +595,13 @@ fn test_doctor_reports_healthy_claude_only_state() {
     let json = parse_stdout_json(&json);
     assert_eq!(json["schema"]["status"], "Current");
     assert_eq!(json["usage"]["total_rows"], 3);
+    assert!(
+        json["pricing"]["audit_findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["kind"] == "BundledFallbackSource")
+    );
 
     let _ = fs::remove_dir_all(root);
 }

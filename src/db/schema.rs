@@ -6,7 +6,7 @@ use crate::domain::provider::ProviderId;
 use crate::domain::timestamp::parse_canonical_utc_rfc3339;
 use crate::domain::usage::{ModelFamily, TokenRecord};
 
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -28,9 +28,16 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
 
     match current {
         Some(v) if v >= SCHEMA_VERSION => {}
+        Some(v) if v >= 10 => {
+            eprintln!(
+                "tkstat database schema {v} is older than {SCHEMA_VERSION}; adding pricing source metadata."
+            );
+            create_tables(&tx)?;
+            set_version(&tx, SCHEMA_VERSION)?;
+        }
         Some(v) if v >= 9 => {
             eprintln!(
-                "tkstat database schema {v} is older than {SCHEMA_VERSION}; adding pricing modifier dimensions."
+                "tkstat database schema {v} is older than {SCHEMA_VERSION}; adding pricing modifier dimensions and source metadata."
             );
             migrate_provider_ids(&tx)?;
             migrate_pricing_dimensions(&tx)?;
@@ -240,6 +247,15 @@ fn create_tables(conn: &Connection) -> Result<()> {
             effective_to        TEXT,
             source              TEXT NOT NULL CHECK(source <> ''),
             CHECK(effective_to IS NULL OR effective_to > effective_from)
+        );
+
+        CREATE TABLE IF NOT EXISTS pricing_sources (
+            source              TEXT PRIMARY KEY CHECK(source <> ''),
+            source_url          TEXT NOT NULL CHECK(source_url <> ''),
+            source_retrieved_at TEXT NOT NULL CHECK(source_retrieved_at <> ''),
+            catalog_version     TEXT NOT NULL CHECK(catalog_version <> ''),
+            source_kind         TEXT NOT NULL CHECK(source_kind IN ('bundled', 'reviewed', 'manual')),
+            notes               TEXT NOT NULL DEFAULT ''
         );",
     )?;
     create_pricing_indexes(conn)?;
@@ -855,6 +871,30 @@ mod tests {
         assert!(indexes.contains(&"idx_pricing_unique_key".to_string()));
         assert!(indexes.contains(&"idx_pricing_lookup".to_string()));
         assert!(indexes.contains(&"idx_pricing_model".to_string()));
+    }
+
+    #[test]
+    fn test_pricing_sources_schema_present() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(pricing_sources)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        for column in [
+            "source",
+            "source_url",
+            "source_retrieved_at",
+            "catalog_version",
+            "source_kind",
+            "notes",
+        ] {
+            assert!(columns.contains(&column.to_string()), "missing {column}");
+        }
     }
 
     #[test]

@@ -72,6 +72,23 @@ pub fn render_doctor(inventory: &DiagnosticsInventory) -> String {
         inventory.pricing.open_interval_count,
         inventory.pricing.model_count
     ));
+    for finding in inventory.pricing.audit_findings.iter().take(10) {
+        out.push_str(&format!(
+            "  finding: {:?} {:?} {}/{}/{} - {}\n",
+            finding.severity,
+            finding.kind,
+            finding.provider,
+            finding.model_id,
+            finding.token_category,
+            finding.remediation
+        ));
+    }
+    if inventory.pricing.audit_findings.len() > 10 {
+        out.push_str(&format!(
+            "  finding: {} more pricing audit finding(s); run `tkstat --pricing-audit`\n",
+            inventory.pricing.audit_findings.len() - 10
+        ));
+    }
 
     let blocking = inventory.blocking_issues();
     if !blocking.is_empty() {
@@ -161,6 +178,7 @@ mod tests {
                 interval_count: 0,
                 open_interval_count: 0,
                 model_count: 0,
+                audit_findings: Vec::new(),
             },
         };
         let output = render_doctor(&inventory);
