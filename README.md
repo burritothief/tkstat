@@ -36,6 +36,50 @@ tkstat --provider codex --by-model  # Codex usage by exact model id
 tkstat --utc -d      # daily usage with UTC calendar buckets
 ```
 
+### Useful examples
+
+First-time setup and a clean ingest:
+
+```
+tkstat --pricing-seed
+tkstat --pricing-audit
+tkstat --force-update --provider all --by-provider
+```
+
+Compare where usage is coming from:
+
+```
+tkstat --by-provider
+tkstat --by-model --limit 20
+tkstat --by-project --columns total,cost,reqs,sessions
+```
+
+Focus on one provider, model, project, or date range:
+
+```
+tkstat --provider codex --by-model --columns input,cached_input,output,reasoning_output,total,cost
+tkstat --provider claude --model sonnet -d
+tkstat --project tkstat --begin 2026-05-01 --end 2026-05-31
+tkstat --utc --begin 2026-05-01 --end 2026-05-31
+```
+
+Use machine-readable output for scripts:
+
+```
+tkstat --provider all --by-model --json
+tkstat --provider codex -d --csv --columns total,cost,reqs
+tkstat --oneline
+```
+
+Watch budgets and pricing health:
+
+```
+tkstat --daily-budget-usd 10 --monthly-budget-usd 200
+tkstat --budget --provider all --monthly-budget-usd 200
+tkstat --pricing-refresh
+tkstat --pricing-audit --json
+```
+
 Daily:
 ```
 $ tkstat -d --limit 10
@@ -130,7 +174,7 @@ tkstat --provider codex --columns input,cached_input,output,reasoning_output,tot
 
 Available columns: `input` (`in`), `output` (`out`), `cache_rd` (`crd`), `cache_cr` (`ccr`), `cached_input` (`cached`), `reasoning_output` (`reason`), `total` (`tot`), `cost`, `reqs` (`req`), `sessions` (`sess`).
 
-These map directly to fields in the [Anthropic Messages API usage object](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#tracking-cache-performance):
+These map to provider usage fields from Claude Code and Codex/OpenAI logs:
 
 | Column | API field | What it is |
 |--------|-----------|------------|
@@ -141,9 +185,9 @@ These map directly to fields in the [Anthropic Messages API usage object](https:
 | `cached in` | `cached_input_tokens` | Codex/OpenAI input tokens served from prompt cache; this is a subset of `input_tokens`. |
 | `reason` | `reasoning_output_tokens` | Codex/OpenAI reasoning tokens; this is a subset of `output_tokens`. |
 | `total` | — | Display total. Claude Code sums input, output, cache read, and cache creation; Codex/OpenAI totals use input plus output so cached and reasoning subcategories are not double-counted. |
-| `cost` | — | Estimated cost in USD, calculated from token counts and [Anthropic's published pricing](https://docs.anthropic.com/en/docs/about-claude/models). |
+| `cost` | — | Estimated cost in USD, calculated from token counts and published provider pricing. |
 | `reqs` | — | Number of API requests. |
-| `sessions` | — | Number of distinct Claude Code sessions. |
+| `sessions` | — | Number of distinct provider sessions. |
 
 
 ### Output formats
