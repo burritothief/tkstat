@@ -397,8 +397,16 @@ pub fn query_summary(conn: &Connection, filter: &QueryFilter) -> Result<Aggregat
 }
 
 pub fn explain_cost(conn: &Connection, filter: &QueryFilter) -> Result<CostExplanation> {
+    explain_cost_at(conn, filter, Utc::now().date_naive())
+}
+
+fn explain_cost_at(
+    conn: &Connection,
+    filter: &QueryFilter,
+    reference_date: NaiveDate,
+) -> Result<CostExplanation> {
     let summary = query_summary(conn, filter)?;
-    let assumptions = cost_assumptions(conn, filter)?;
+    let assumptions = cost_assumptions_at(conn, filter, reference_date)?;
     let component_count = filtered_component_count(conn, filter)?;
     let confidence = if assumptions.is_empty() {
         CostConfidence::High
@@ -430,7 +438,11 @@ fn filtered_component_count(conn: &Connection, filter: &QueryFilter) -> Result<u
     Ok(count.max(0) as u64)
 }
 
-fn cost_assumptions(conn: &Connection, filter: &QueryFilter) -> Result<Vec<CostAssumption>> {
+fn cost_assumptions_at(
+    conn: &Connection,
+    filter: &QueryFilter,
+    reference_date: NaiveDate,
+) -> Result<Vec<CostAssumption>> {
     if !table_exists(conn, "usage_billing_components")? {
         return Ok(Vec::new());
     }
@@ -477,7 +489,7 @@ fn cost_assumptions(conn: &Connection, filter: &QueryFilter) -> Result<Vec<CostA
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    let cutoff = Utc::now().date_naive() - TimeDelta::days(SOURCE_STALE_AFTER_DAYS);
+    let cutoff = stale_source_cutoff(reference_date);
     let mut assumptions = Vec::new();
     for row in rows {
         assumptions.extend(default_modifier_assumptions(&row));
@@ -526,6 +538,10 @@ fn cost_assumptions(conn: &Connection, filter: &QueryFilter) -> Result<Vec<CostA
     });
     assumptions.dedup();
     Ok(assumptions)
+}
+
+fn stale_source_cutoff(reference_date: NaiveDate) -> NaiveDate {
+    reference_date - TimeDelta::days(SOURCE_STALE_AFTER_DAYS)
 }
 
 #[derive(Debug)]
@@ -1685,6 +1701,49 @@ mod tests {
         }
     }
 
+    fn stale_cost_assumption_present_for_retrieved_at(retrieved_at: &str) -> bool {
+        let db = Database::open_in_memory().unwrap();
+        let source = format!("reviewed:boundary-{retrieved_at}");
+        let mut interval = provider_price(
+            "claude-code",
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            10.0,
+            "2026-01-01T00:00:00Z",
+            None,
+        );
+        interval.source = source.clone();
+        db.insert_pricing_interval(&interval).unwrap();
+        let mut metadata = reviewed_source(&source);
+        metadata.source_retrieved_at = retrieved_at.into();
+        upsert_source_metadata(db.conn(), &metadata).unwrap();
+
+        let mut record = make_record(
+            "stale-boundary",
+            "2026-04-05T10:00:00Z",
+            "opus",
+            "proj-a",
+            1_000_000,
+            0,
+        );
+        record.output_tokens = 0;
+        db.insert_records(&[record]).unwrap();
+
+        let explanation = explain_cost_at(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+            NaiveDate::from_ymd_opt(2026, 5, 24).unwrap(),
+        )
+        .unwrap();
+        explanation.assumptions.iter().any(|assumption| {
+            assumption.kind == CostAssumptionKind::StalePricingSource
+                && assumption.source.as_deref() == Some(source.as_str())
+        })
+    }
+
     #[test]
     fn test_query_daily() {
         let db = Database::open_in_memory().unwrap();
@@ -2620,6 +2679,22 @@ mod tests {
                     .as_deref()
                     .is_some_and(|source| source.starts_with("seed:"))
         }));
+    }
+
+    #[test]
+    fn test_explain_cost_stale_source_boundary_uses_reference_date() {
+        assert!(
+            !stale_cost_assumption_present_for_retrieved_at("2026-02-23"),
+            "retrieval date exactly at the 90-day cutoff should not be stale"
+        );
+        assert!(
+            stale_cost_assumption_present_for_retrieved_at("2026-02-22"),
+            "retrieval date just before the 90-day cutoff should be stale"
+        );
+        assert!(
+            !stale_cost_assumption_present_for_retrieved_at("2026-02-24"),
+            "retrieval date just after the 90-day cutoff should not be stale"
+        );
     }
 
     #[test]
