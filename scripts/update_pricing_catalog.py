@@ -23,6 +23,13 @@ from typing import Any
 
 ANTHROPIC_URL = "https://www.anthropic.com/pricing"
 OPENAI_URL = "https://openai.com/api/pricing/"
+SUPPORTED_DIMENSIONS = {
+    "service_tier",
+    "speed",
+    "region",
+    "processing_mode",
+    "source_detail",
+}
 
 
 def positive_float(value: Any, field: str) -> float:
@@ -33,6 +40,27 @@ def positive_float(value: Any, field: str) -> float:
     if parsed < 0:
         raise ValueError(f"{field} must be non-negative")
     return parsed
+
+
+def normalized_dimensions(value: Any) -> tuple[tuple[str, str], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, dict):
+        raise ValueError("dimensions must be an object")
+
+    normalized: list[tuple[str, str]] = []
+    for key, raw in sorted(value.items()):
+        if key not in SUPPORTED_DIMENSIONS:
+            raise ValueError(f"unsupported pricing dimension {key}")
+        if raw is None:
+            continue
+        if not isinstance(raw, str):
+            raise ValueError(f"pricing dimension {key} must be a string")
+        dimension_value = raw.strip()
+        if not dimension_value:
+            raise ValueError(f"pricing dimension {key} must not be empty")
+        normalized.append((key, dimension_value))
+    return tuple(normalized)
 
 
 def validate_catalog(catalog: dict[str, Any]) -> None:
@@ -58,7 +86,7 @@ def validate_catalog(catalog: dict[str, Any]) -> None:
     if not source_ids:
         raise ValueError("catalog must contain at least one source")
 
-    seen_keys: set[tuple[str, str, str, str, str]] = set()
+    seen_keys: set[tuple[str, str, str, tuple[tuple[str, str], ...], str, str]] = set()
     for entry in catalog.get("entries", []):
         provider = str(entry.get("provider", "")).strip()
         if provider not in {"claude-code", "codex"}:
@@ -81,6 +109,7 @@ def validate_catalog(catalog: dict[str, Any]) -> None:
         rates = entry.get("rates_per_1m_tokens") or {}
         if not rates:
             raise ValueError("entry must contain rates_per_1m_tokens")
+        dimensions = normalized_dimensions(entry.get("dimensions", {}))
         for category, rate in rates.items():
             if category not in {
                 "input",
@@ -93,7 +122,7 @@ def validate_catalog(catalog: dict[str, Any]) -> None:
                 raise ValueError(f"unsupported token category {category}")
             positive_float(rate, f"{provider}/{category}")
             for model_id in model_ids:
-                key = (provider, model_id, category, currency, effective_from)
+                key = (provider, model_id, category, dimensions, currency, effective_from)
                 if key in seen_keys:
                     raise ValueError(f"duplicate catalog interval {key}")
                 seen_keys.add(key)
@@ -122,11 +151,15 @@ def parse_anthropic_html(contents: str) -> list[dict[str, Any]]:
         input_rate = positive_float(values.get("data-tkstat-input"), "anthropic input")
         output_rate = positive_float(values.get("data-tkstat-output"), "anthropic output")
         alias = values.get("data-tkstat-alias", "").strip()
+        common = {
+            "provider": "claude-code",
+            "model_ids": model_ids,
+            "model_aliases": [alias] if alias else [],
+        }
+        label = alias or model_ids[0]
         entries.append(
             {
-                "provider": "claude-code",
-                "model_ids": model_ids,
-                "model_aliases": [alias] if alias else [],
+                **common,
                 "dimensions": {},
                 "rates_per_1m_tokens": {
                     "input": input_rate,
@@ -134,7 +167,27 @@ def parse_anthropic_html(contents: str) -> list[dict[str, Any]]:
                     "cache_creation": round(input_rate * 1.25, 6),
                     "cache_read": round(input_rate * 0.10, 6),
                 },
-                "notes": f"Claude {alias or model_ids[0]} pricing extracted for review.",
+                "notes": f"Claude {label} pricing extracted for review.",
+            }
+        )
+        entries.append(
+            {
+                **common,
+                "dimensions": {"source_detail": "ephemeral_5m"},
+                "rates_per_1m_tokens": {
+                    "cache_creation": round(input_rate * 1.25, 6),
+                },
+                "notes": f"Claude {label} 5-minute prompt-cache write pricing extracted for review.",
+            }
+        )
+        entries.append(
+            {
+                **common,
+                "dimensions": {"source_detail": "ephemeral_1h"},
+                "rates_per_1m_tokens": {
+                    "cache_creation": round(input_rate * 2.0, 6),
+                },
+                "notes": f"Claude {label} 1-hour prompt-cache write pricing extracted for review.",
             }
         )
     if not entries:

@@ -557,6 +557,15 @@ fn test_update_pricing_catalog_script_parses_sanitized_fixtures_offline() {
                 .any(|model| model == "claude-opus-fixture")
     }));
     assert!(entries.iter().any(|entry| {
+        entry["provider"] == "claude-code"
+            && entry["dimensions"]["source_detail"] == "ephemeral_1h"
+            && entry["model_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model == "claude-opus-fixture")
+    }));
+    assert!(entries.iter().any(|entry| {
         entry["provider"] == "codex"
             && entry["dimensions"]["processing_mode"] == "batch"
             && entry["model_ids"]
