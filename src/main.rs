@@ -1,13 +1,13 @@
 use std::time::Instant;
 
 use anyhow::Result;
-use chrono::Datelike;
+use chrono::{Datelike, Local, NaiveDate, Utc};
 use clap::Parser;
 use rusqlite::{Connection, OpenFlags};
 
 use tkstat::budget::{BudgetPeriod, BudgetReportRow, BudgetWarning, evaluate_budget_rows};
 use tkstat::cli::{ChartMetric, Cli, OutputMode};
-use tkstat::domain::period::TimePeriod;
+use tkstat::domain::period::{ReportTimeZone, TimePeriod};
 use tkstat::domain::usage::AggregatedRow;
 use tkstat::render::columns;
 use tkstat::{config, db, diagnostics, ingest, render};
@@ -142,7 +142,12 @@ fn main() -> Result<()> {
                 .collect();
             let metric_label = format!("{metric:?}").to_lowercase();
             if cli.heatmap {
-                render::heatmap::render_heatmap(provider_label, &chart_data, &metric_label)
+                render::heatmap::render_heatmap_with_today(
+                    provider_label,
+                    &chart_data,
+                    &metric_label,
+                    report_today(filter.report_timezone),
+                )
             } else {
                 render::chart::render_chart(provider_label, &chart_data, &metric_label)
             }
@@ -301,6 +306,13 @@ fn columns_require_cost(columns: &[columns::Column]) -> bool {
         .any(|column| matches!(column, columns::Column::Cost))
 }
 
+fn report_today(timezone: ReportTimeZone) -> NaiveDate {
+    match timezone {
+        ReportTimeZone::Local => Local::now().date_naive(),
+        ReportTimeZone::Utc => Utc::now().date_naive(),
+    }
+}
+
 fn diagnostic_sources(cli: &Cli) -> ingest::ProviderSources {
     let claude_data_dir = cli
         .data_dir
@@ -447,7 +459,7 @@ fn budget_report_rows(
     base_filter: &db::query::QueryFilter,
     cli: &Cli,
 ) -> Result<Vec<BudgetReportRow>> {
-    let today = chrono::Utc::now().date_naive();
+    let today = report_today(base_filter.report_timezone);
     let month_start = today.with_day(1).expect("day 1 is always valid");
     let mut rows = Vec::new();
     rows.push(budget_report_row(
@@ -543,6 +555,18 @@ mod tests {
         }];
         let rows = with_provider_label(rows, "all providers");
         assert_eq!(rows[0].provider.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn test_report_today_uses_selected_timezone_policy() {
+        assert_eq!(
+            report_today(ReportTimeZone::Local),
+            chrono::Local::now().date_naive()
+        );
+        assert_eq!(
+            report_today(ReportTimeZone::Utc),
+            chrono::Utc::now().date_naive()
+        );
     }
 
     #[test]

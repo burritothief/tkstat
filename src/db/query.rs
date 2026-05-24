@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Result, bail};
-use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeDelta, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeDelta, Timelike, Utc};
 use rusqlite::Connection;
 
 use crate::domain::period::{ReportTimeZone, TimePeriod, day_sql_expr};
@@ -61,7 +61,9 @@ pub fn query_by_period_with_cost_requirement(
             SUM(total_tokens),
             SUM({cost_expr}),
             COUNT(*),
-            COUNT(DISTINCT provider || ':' || session_id)
+            COUNT(DISTINCT provider || ':' || session_id),
+            MIN(timestamp),
+            MAX(timestamp)
          FROM token_usage
          WHERE 1=1 {where_clause}
          GROUP BY {group_expr}
@@ -71,11 +73,11 @@ pub fn query_by_period_with_cost_requirement(
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
     let mut stmt = conn.prepare(&sql)?;
-    let result: Vec<AggregatedRow> = stmt
-        .query_map(param_refs.as_slice(), row_to_aggregated)?
+    let result: Vec<PeriodAggregate> = stmt
+        .query_map(param_refs.as_slice(), row_to_period_aggregate)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    let filled = fill_gaps(period, result);
+    let filled = fill_gaps(conn, period, filter.report_timezone, result)?;
 
     let limit = limit as usize;
     if filled.len() > limit {
@@ -388,6 +390,12 @@ pub struct DailyTotal {
     pub cost_usd: f64,
 }
 
+struct PeriodAggregate {
+    row: AggregatedRow,
+    first_timestamp: DateTime<Utc>,
+    last_timestamp: DateTime<Utc>,
+}
+
 /// Query daily totals for heatmap and chart rendering.
 pub fn query_daily_totals(conn: &Connection, filter: &QueryFilter) -> Result<Vec<DailyTotal>> {
     query_daily_totals_with_cost_requirement(conn, filter, true)
@@ -452,6 +460,20 @@ fn row_to_aggregated(row: &rusqlite::Row<'_>) -> rusqlite::Result<AggregatedRow>
         cost_usd: row.get(8)?,
         request_count: row.get::<_, i64>(9).map(safe_u64)?,
         session_count: row.get::<_, i64>(10).map(safe_u64)?,
+    })
+}
+
+fn row_to_period_aggregate(row: &rusqlite::Row<'_>) -> rusqlite::Result<PeriodAggregate> {
+    let first_timestamp: String = row.get(11)?;
+    let last_timestamp: String = row.get(12)?;
+    Ok(PeriodAggregate {
+        row: row_to_aggregated(row)?,
+        first_timestamp: parse_canonical_utc_rfc3339(&first_timestamp).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(11, rusqlite::types::Type::Text, Box::new(e))
+        })?,
+        last_timestamp: parse_canonical_utc_rfc3339(&last_timestamp).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(12, rusqlite::types::Type::Text, Box::new(e))
+        })?,
     })
 }
 
@@ -722,7 +744,25 @@ fn validate_category_coverage(
 
 // -- Gap filling --
 
-fn fill_gaps(period: TimePeriod, rows: Vec<AggregatedRow>) -> Vec<AggregatedRow> {
+fn fill_gaps(
+    conn: &Connection,
+    period: TimePeriod,
+    timezone: ReportTimeZone,
+    rows: Vec<PeriodAggregate>,
+) -> Result<Vec<AggregatedRow>> {
+    if timezone == ReportTimeZone::Local
+        && matches!(period, TimePeriod::FiveMinutes | TimePeriod::Hourly)
+    {
+        return fill_subdaily_local_gaps(conn, period, rows);
+    }
+
+    Ok(fill_naive_gaps(
+        period,
+        rows.into_iter().map(|row| row.row).collect(),
+    ))
+}
+
+fn fill_naive_gaps(period: TimePeriod, rows: Vec<AggregatedRow>) -> Vec<AggregatedRow> {
     if rows.len() < 2 {
         return rows;
     }
@@ -768,6 +808,89 @@ fn fill_gaps(period: TimePeriod, rows: Vec<AggregatedRow>) -> Vec<AggregatedRow>
             })
         })
         .collect()
+}
+
+fn fill_subdaily_local_gaps(
+    conn: &Connection,
+    period: TimePeriod,
+    rows: Vec<PeriodAggregate>,
+) -> Result<Vec<AggregatedRow>> {
+    if rows.len() < 2 {
+        return Ok(rows.into_iter().map(|row| row.row).collect());
+    }
+
+    let first_timestamp = rows
+        .iter()
+        .map(|row| row.first_timestamp)
+        .min()
+        .expect("non-empty rows have a first timestamp");
+    let last_timestamp = rows
+        .iter()
+        .map(|row| row.last_timestamp)
+        .max()
+        .expect("non-empty rows have a last timestamp");
+
+    let mut by_label: HashMap<String, AggregatedRow> = rows
+        .into_iter()
+        .map(|aggregate| (aggregate.row.period.clone(), aggregate.row))
+        .collect();
+    let step = match period {
+        TimePeriod::FiveMinutes => TimeDelta::minutes(5),
+        TimePeriod::Hourly => TimeDelta::hours(1),
+        _ => return Ok(by_label.into_values().collect()),
+    };
+
+    let mut labels = Vec::new();
+    let mut seen = HashSet::new();
+    let mut current = floor_utc_for_period(first_timestamp, period);
+    let end = floor_utc_for_period(last_timestamp, period);
+    while current <= end {
+        let label = period_label_for_utc(conn, period, ReportTimeZone::Local, current)?;
+        if seen.insert(label.clone()) {
+            labels.push(label);
+        }
+        current += step;
+    }
+
+    Ok(labels
+        .into_iter()
+        .map(|label| {
+            by_label.remove(&label).unwrap_or(AggregatedRow {
+                period: label,
+                ..Default::default()
+            })
+        })
+        .collect())
+}
+
+fn floor_utc_for_period(timestamp: DateTime<Utc>, period: TimePeriod) -> DateTime<Utc> {
+    let timestamp = timestamp
+        .with_second(0)
+        .and_then(|dt| dt.with_nanosecond(0))
+        .expect("valid timestamp second/nanosecond floor");
+    match period {
+        TimePeriod::FiveMinutes => timestamp
+            .with_minute((timestamp.minute() / 5) * 5)
+            .expect("valid timestamp 5-minute floor"),
+        TimePeriod::Hourly => timestamp
+            .with_minute(0)
+            .expect("valid timestamp hourly floor"),
+        TimePeriod::Daily | TimePeriod::Monthly | TimePeriod::Yearly => timestamp,
+    }
+}
+
+fn period_label_for_utc(
+    conn: &Connection,
+    period: TimePeriod,
+    timezone: ReportTimeZone,
+    timestamp: DateTime<Utc>,
+) -> Result<String> {
+    let expr = period.sql_group_expr(timezone).replace("timestamp", "?1");
+    Ok(conn.query_row(
+        &format!("SELECT {expr}"),
+        [format_utc_rfc3339(timestamp)],
+        |row| row.get(0),
+    )?)
 }
 
 /// Generate gap-filling labels for sub-daily and daily periods.
@@ -1488,6 +1611,110 @@ mod tests {
     }
 
     #[test]
+    fn test_local_hourly_gap_fill_skips_spring_forward_nonexistent_hour() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_pricing().unwrap();
+        let first = "2026-03-08T09:30:00Z";
+        let second = "2026-03-08T10:30:00Z";
+        db.insert_records(&[
+            make_record("spring-local-1", first, "opus", "proj-a", 10, 1),
+            make_record("spring-local-2", second, "opus", "proj-a", 20, 1),
+        ])
+        .unwrap();
+
+        let local_day = sqlite_local_day(db.conn(), first);
+        let filter = QueryFilter {
+            begin: NaiveDate::parse_from_str(&local_day, "%Y-%m-%d").ok(),
+            end: NaiveDate::parse_from_str(&local_day, "%Y-%m-%d").ok(),
+            include_subagents: true,
+            ..Default::default()
+        };
+        let rows = query_by_period(db.conn(), TimePeriod::Hourly, &filter, 30).unwrap();
+        let expected = vec![
+            sqlite_local_hour(db.conn(), first),
+            sqlite_local_hour(db.conn(), second),
+        ];
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.period.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(
+            rows.iter().all(|row| !row.period.ends_with("02:00")),
+            "local gap filling should not synthesize the nonexistent DST spring-forward hour"
+        );
+    }
+
+    #[test]
+    fn test_local_hourly_gap_fill_combines_fall_back_repeated_hour() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_pricing().unwrap();
+        let first = "2026-11-01T08:30:00Z";
+        let second = "2026-11-01T09:30:00Z";
+        db.insert_records(&[
+            make_record("fall-local-1", first, "opus", "proj-a", 10, 1),
+            make_record("fall-local-2", second, "opus", "proj-a", 20, 1),
+        ])
+        .unwrap();
+
+        let local_day = sqlite_local_day(db.conn(), first);
+        let filter = QueryFilter {
+            begin: NaiveDate::parse_from_str(&local_day, "%Y-%m-%d").ok(),
+            end: NaiveDate::parse_from_str(&local_day, "%Y-%m-%d").ok(),
+            include_subagents: true,
+            ..Default::default()
+        };
+        let rows = query_by_period(db.conn(), TimePeriod::Hourly, &filter, 30).unwrap();
+        let first_label = sqlite_local_hour(db.conn(), first);
+        let second_label = sqlite_local_hour(db.conn(), second);
+        assert_eq!(first_label, second_label);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].period, first_label);
+        assert_eq!(rows[0].request_count, 2);
+        assert_eq!(rows[0].input_tokens, 30);
+    }
+
+    #[test]
+    fn test_report_timezone_does_not_change_cost_totals() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_pricing().unwrap();
+        db.insert_records(&[
+            make_record(
+                "cost-local-1",
+                "2026-04-08T06:30:00Z",
+                "opus",
+                "proj-a",
+                10,
+                1,
+            ),
+            make_record(
+                "cost-local-2",
+                "2026-04-08T07:30:00Z",
+                "opus",
+                "proj-a",
+                20,
+                2,
+            ),
+        ])
+        .unwrap();
+
+        let local = QueryFilter {
+            report_timezone: ReportTimeZone::Local,
+            include_subagents: true,
+            ..Default::default()
+        };
+        let utc = QueryFilter {
+            report_timezone: ReportTimeZone::Utc,
+            include_subagents: true,
+            ..Default::default()
+        };
+        let local_total = query_summary(db.conn(), &local).unwrap().cost_usd;
+        let utc_total = query_summary(db.conn(), &utc).unwrap().cost_usd;
+        assert!((local_total - utc_total).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn test_query_empty_db() {
         let db = Database::open_in_memory().unwrap();
         let filter = QueryFilter {
@@ -1564,7 +1791,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let filled = fill_gaps(TimePeriod::Daily, rows);
+        let filled = fill_naive_gaps(TimePeriod::Daily, rows);
         assert_eq!(filled.len(), 3);
         assert_eq!(filled[1].period, "2026-04-02");
         assert_eq!(filled[1].request_count, 0);
