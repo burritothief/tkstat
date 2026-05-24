@@ -294,6 +294,7 @@ mod tests {
             service_tier: None,
             speed: None,
             region: None,
+            processing_mode: None,
             cost_usd: 0.0,
             project: "test".into(),
             source_file: "/test/file.jsonl".into(),
@@ -330,7 +331,7 @@ mod tests {
 
     #[test]
     fn test_reset_preserves_pricing_intervals() {
-        use crate::domain::pricing::{PricingInterval, TokenCategory};
+        use crate::domain::pricing::{PricingDimensions, PricingInterval, TokenCategory};
 
         let db = Database::open_in_memory().unwrap();
         db.seed_pricing().unwrap();
@@ -342,12 +343,17 @@ mod tests {
             .unwrap();
         assert!(before > 0);
 
-        let interval = crate::db::pricing::applicable_interval(
+        let standard = PricingDimensions {
+            processing_mode: Some("standard".into()),
+            ..Default::default()
+        };
+        let interval = crate::db::pricing::applicable_interval_for_dimensions(
             db.conn(),
             crate::domain::provider::ProviderId::Codex,
             "gpt-5.4",
             TokenCategory::Input,
             "2026-05-24T00:00:00Z".parse().unwrap(),
+            &standard,
         )
         .unwrap();
         assert_eq!(interval.model_id, "gpt-5.4");
@@ -361,12 +367,13 @@ mod tests {
             .unwrap();
         assert_eq!(after, before);
 
-        let selected = crate::db::pricing::applicable_interval(
+        let selected = crate::db::pricing::applicable_interval_for_dimensions(
             db.conn(),
             crate::domain::provider::ProviderId::Codex,
             "gpt-5.4",
             TokenCategory::Input,
             "2026-05-24T00:00:00Z".parse().unwrap(),
+            &standard,
         )
         .unwrap();
         assert_eq!(selected.rate_per_1m_tokens, interval.rate_per_1m_tokens);

@@ -209,6 +209,7 @@ fn parse_jsonl_lines_with_errors<'a>(
             service_tier,
             speed,
             region,
+            processing_mode: None,
             cost_usd: 0.0,
             project: file_info.project_name.clone(),
             source_file: file_info.path.to_string_lossy().to_string(),

@@ -367,6 +367,7 @@ fn row_to_token_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<(i64, TokenR
             service_tier: None,
             speed: None,
             region: None,
+            processing_mode: None,
             cost_usd: row.get(14)?,
             project: row.get(15)?,
             source_file: row.get(16)?,

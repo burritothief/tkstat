@@ -43,6 +43,7 @@ struct CodexSessionState {
     session_id: Option<String>,
     cwd: Option<String>,
     model_id: Option<String>,
+    processing_mode: Option<String>,
 }
 
 /// Walk a Codex home directory and find session JSONL files.
@@ -180,6 +181,9 @@ fn update_from_session_meta(state: &mut CodexSessionState, payload: &Value) {
     {
         state.cwd = Some(cwd.to_string());
     }
+    if let Some(processing_mode) = string_at(payload, &["processing_mode"]) {
+        state.processing_mode = Some(processing_mode);
+    }
 }
 
 fn update_from_turn_context(state: &mut CodexSessionState, payload: &Value) {
@@ -192,6 +196,9 @@ fn update_from_turn_context(state: &mut CodexSessionState, payload: &Value) {
         && !cwd.is_empty()
     {
         state.cwd = Some(cwd.to_string());
+    }
+    if let Some(processing_mode) = string_at(payload, &["processing_mode"]) {
+        state.processing_mode = Some(processing_mode);
     }
 }
 
@@ -207,20 +214,29 @@ fn token_count_record(
 
     let timestamp = entry.timestamp?;
     let model_id = state.model_id.clone()?;
-    let usage: CodexUsage =
-        serde_json::from_value(entry.payload.get("info")?.get("last_token_usage")?.clone()).ok()?;
+    let usage_value = usage_value(&entry.payload)?;
+    let usage = parse_usage(usage_value)?;
+    let processing_mode = first_present([
+        string_at(usage_value, &["processing_mode"]),
+        string_at(&entry.payload, &["info", "processing_mode"]),
+        string_at(&entry.payload, &["processing_mode"]),
+        string_at(&entry.payload, &["response", "processing_mode"]),
+        state.processing_mode.clone(),
+    ])
+    .unwrap_or_else(|| "standard".into());
     let session_id = state
         .session_id
         .clone()
         .or_else(|| session_id_from_path(&file_info.path))?;
     let request_id = format!(
-        "{}:{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}",
         session_id,
         format_utc_rfc3339(timestamp),
         usage.input_tokens,
         usage.cached_input_tokens,
         usage.output_tokens,
-        usage.reasoning_output_tokens
+        usage.reasoning_output_tokens,
+        processing_mode
     );
     let project = state
         .cwd
@@ -247,10 +263,61 @@ fn token_count_record(
         service_tier: None,
         speed: None,
         region: None,
+        processing_mode: Some(processing_mode),
         cost_usd: 0.0,
         project,
         source_file: file_info.path.to_string_lossy().to_string(),
         is_subagent: false,
+    })
+}
+
+fn usage_value(payload: &Value) -> Option<&Value> {
+    payload
+        .get("info")
+        .and_then(|info| info.get("last_token_usage"))
+        .or_else(|| {
+            payload
+                .get("response")
+                .and_then(|response| response.get("usage"))
+        })
+        .or_else(|| payload.get("usage"))
+}
+
+fn parse_usage(value: &Value) -> Option<CodexUsage> {
+    let mut usage: CodexUsage = serde_json::from_value(value.clone()).ok()?;
+    if usage.cached_input_tokens == 0 {
+        usage.cached_input_tokens = value
+            .get("input_token_details")
+            .and_then(|details| details.get("cached_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+    }
+    if usage.reasoning_output_tokens == 0 {
+        usage.reasoning_output_tokens = value
+            .get("output_token_details")
+            .and_then(|details| details.get("reasoning_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+    }
+    Some(usage)
+}
+
+fn first_present(values: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+    values
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+}
+
+fn string_at(value: &Value, path: &[&str]) -> Option<String> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    current.as_str().and_then(|value| {
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_string())
     })
 }
 
@@ -305,6 +372,12 @@ mod tests {
         )
     }
 
+    fn response_usage_token_count(ts: &str, processing_mode: &str) -> String {
+        format!(
+            r#"{{"timestamp":"{ts}","type":"event_msg","payload":{{"type":"token_count","response":{{"processing_mode":"{processing_mode}","usage":{{"input_tokens":100,"input_token_details":{{"cached_tokens":40}},"output_tokens":20,"output_token_details":{{"reasoning_tokens":7}}}}}}}}}}"#
+        )
+    }
+
     #[test]
     fn test_parse_codex_token_count_preserves_openai_token_categories() {
         let lines = format!(
@@ -326,6 +399,25 @@ mod tests {
         assert_eq!(record.reasoning_output_tokens, 7);
         assert_eq!(record.cache_read_tokens, 0);
         assert_eq!(record.cache_creation_tokens, 0);
+        assert_eq!(record.processing_mode.as_deref(), Some("standard"));
+    }
+
+    #[test]
+    fn test_parse_codex_response_usage_and_explicit_processing_mode() {
+        let lines = format!(
+            "{}\n{}\n{}",
+            session_meta(),
+            turn_context("gpt-5.5"),
+            response_usage_token_count("2026-05-24T00:40:04.988Z", "batch")
+        );
+        let records = parse_session_bytes(lines.as_bytes(), &source_file());
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.input_tokens, 100);
+        assert_eq!(record.cached_input_tokens, 40);
+        assert_eq!(record.output_tokens, 20);
+        assert_eq!(record.reasoning_output_tokens, 7);
+        assert_eq!(record.processing_mode.as_deref(), Some("batch"));
     }
 
     #[test]

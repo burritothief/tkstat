@@ -396,6 +396,7 @@ mod tests {
             service_tier: None,
             speed: None,
             region: None,
+            processing_mode: None,
             cost_usd: 0.0,
             project: "demo".into(),
             source_file: "/tmp/session.jsonl".into(),
