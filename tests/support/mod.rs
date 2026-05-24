@@ -292,15 +292,38 @@ pub fn assert_missing_pricing_remediation(
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("missing pricing coverage"));
-    assert!(stderr.contains(&format!("provider={provider}")));
-    assert!(stderr.contains(&format!("model={model_id}")));
+    assert_eq!(
+        stderr_field_value(&stderr, "provider"),
+        Some(provider),
+        "pricing remediation provider did not match exactly\nstderr:\n{stderr}"
+    );
+    assert_eq!(
+        stderr_field_value(&stderr, "model"),
+        Some(model_id),
+        "pricing remediation model did not match exactly\nstderr:\n{stderr}"
+    );
     match category {
-        Some(category) => assert!(stderr.contains(&format!("category={category}"))),
-        None => assert!(stderr.contains("category=")),
+        Some(category) => assert_eq!(
+            stderr_field_value(&stderr, "category"),
+            Some(category),
+            "pricing remediation category did not match exactly\nstderr:\n{stderr}"
+        ),
+        None => assert!(
+            stderr_field_value(&stderr, "category").is_some(),
+            "pricing remediation did not include category\nstderr:\n{stderr}"
+        ),
     }
     assert!(stderr.contains("usage range"));
     assert!(stderr.contains("tkstat --pricing-refresh"));
     assert!(stderr.contains("tkstat --pricing-seed"));
+}
+
+pub fn stderr_field_value<'a>(stderr: &'a str, key: &str) -> Option<&'a str> {
+    let prefix = format!("{key}=");
+    stderr
+        .split(|ch: char| ch.is_whitespace() || ch == ',' || ch == ';')
+        .find_map(|segment| segment.strip_prefix(&prefix))
+        .filter(|value| !value.is_empty())
 }
 
 pub fn setup_ingested_corpus(root: &Path, test_name: &str) -> (PathBuf, PathBuf) {
@@ -338,7 +361,7 @@ pub fn setup_ingested_corpus(root: &Path, test_name: &str) -> (PathBuf, PathBuf)
 
 pub fn audit_record(model_id: &str) -> TokenRecord {
     TokenRecord {
-        provider: "codex".into(),
+        provider: tkstat::domain::provider::ProviderId::Codex,
         request_id: "audit-request".into(),
         session_id: "audit-session".into(),
         uuid: "audit-uuid".into(),
@@ -360,7 +383,7 @@ pub fn audit_record(model_id: &str) -> TokenRecord {
 
 pub fn audit_interval(from: &str, to: Option<&str>) -> PricingInterval {
     let mut interval = PricingInterval::usd(
-        "codex",
+        tkstat::domain::provider::ProviderId::Codex,
         "gpt-audit",
         TokenCategory::Input,
         1.0,

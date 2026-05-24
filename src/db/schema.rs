@@ -7,13 +7,15 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
 
-    conn.execute_batch(
+    let tx = conn.unchecked_transaction()?;
+
+    tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (
             version INTEGER NOT NULL
         )",
     )?;
 
-    let current: Option<i64> = conn
+    let current: Option<i64> = tx
         .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
             row.get(0)
         })
@@ -26,20 +28,19 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
                 "tkstat database schema {v} is older than {SCHEMA_VERSION}; rebuilding usage cache. Run `tkstat --force-update` if you need to force a clean reingest, and run `tkstat --pricing-seed` or `tkstat --pricing-refresh` if pricing is missing."
             );
             // Drop old tables and recreate (pre-1.0, no migration path needed)
-            conn.execute_batch(
-                "DROP TABLE IF EXISTS token_usage; DROP TABLE IF EXISTS file_state;",
-            )?;
-            create_tables(conn)?;
-            migrate_provider_ids(conn)?;
-            set_version(conn, SCHEMA_VERSION)?;
+            tx.execute_batch("DROP TABLE IF EXISTS token_usage; DROP TABLE IF EXISTS file_state;")?;
+            create_tables(&tx)?;
+            migrate_provider_ids(&tx)?;
+            set_version(&tx, SCHEMA_VERSION)?;
         }
         None => {
-            create_tables(conn)?;
-            migrate_provider_ids(conn)?;
-            set_version(conn, SCHEMA_VERSION)?;
+            create_tables(&tx)?;
+            migrate_provider_ids(&tx)?;
+            set_version(&tx, SCHEMA_VERSION)?;
         }
     }
 
+    tx.commit()?;
     Ok(())
 }
 
@@ -231,6 +232,76 @@ mod tests {
             )
             .unwrap();
         assert_eq!(old_count, 0);
+        assert_eq!(canonical_count, 1);
+    }
+
+    #[test]
+    fn test_migration_rolls_back_table_rebuild_and_provider_rewrite_on_failure() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (7);
+             CREATE TABLE token_usage (request_id TEXT PRIMARY KEY);
+             INSERT INTO token_usage (request_id) VALUES ('legacy-usage');
+             CREATE TABLE file_state (path TEXT PRIMARY KEY);
+             INSERT INTO file_state (path) VALUES ('legacy.jsonl');
+             CREATE TABLE pricing_intervals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                token_category TEXT NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'USD',
+                rate_per_1m_tokens REAL NOT NULL,
+                effective_from TEXT NOT NULL,
+                effective_to TEXT,
+                source TEXT NOT NULL,
+                UNIQUE(provider, model_id, token_category, currency, effective_from)
+             );
+             INSERT INTO pricing_intervals
+                (provider, model_id, token_category, currency, rate_per_1m_tokens, effective_from, effective_to, source)
+             VALUES
+                ('claude', 'claude-opus-4-6', 'input', 'USD', 5.0, '2026-01-01T00:00:00Z', NULL, 'legacy'),
+                ('claude-code', 'claude-opus-4-6', 'input', 'USD', 5.0, '2026-01-01T00:00:00Z', NULL, 'canonical'),
+                ('codex', 'gpt-5.5', 'input', 'USD', 2.5, '2026-01-01T00:00:00Z', NULL, 'seed');
+             CREATE TRIGGER fail_schema_version_insert
+             BEFORE INSERT ON schema_version
+             BEGIN
+                SELECT RAISE(FAIL, 'injected schema version failure');
+             END;",
+        )
+        .unwrap();
+
+        let err = run_migrations(&conn).unwrap_err().to_string();
+        assert!(err.contains("injected schema version failure"));
+
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 7);
+        let legacy_usage: String = conn
+            .query_row("SELECT request_id FROM token_usage", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(legacy_usage, "legacy-usage");
+        let legacy_file: String = conn
+            .query_row("SELECT path FROM file_state", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(legacy_file, "legacy.jsonl");
+
+        let old_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pricing_intervals WHERE provider = 'claude'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let canonical_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pricing_intervals WHERE provider = 'claude-code'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_count, 1);
         assert_eq!(canonical_count, 1);
     }
 

@@ -30,7 +30,9 @@ pub fn batch_insert(conn: &Connection, records: &[TokenRecord]) -> Result<usize>
         for r in records {
             validate_record(r)?;
             let duplicate = duplicate_stmt
-                .query_row(rusqlite::params![r.provider, r.request_id], |_| Ok(()))
+                .query_row(rusqlite::params![r.provider.as_str(), r.request_id], |_| {
+                    Ok(())
+                })
                 .optional()?
                 .is_some();
             if duplicate {
@@ -38,7 +40,7 @@ pub fn batch_insert(conn: &Connection, records: &[TokenRecord]) -> Result<usize>
             }
 
             let changed = stmt.execute(rusqlite::params![
-                r.provider,
+                r.provider.as_str(),
                 r.request_id,
                 r.session_id,
                 r.uuid,
@@ -65,7 +67,6 @@ pub fn batch_insert(conn: &Connection, records: &[TokenRecord]) -> Result<usize>
 }
 
 fn validate_record(record: &TokenRecord) -> Result<()> {
-    ensure_non_empty("provider", &record.provider)?;
     ensure_non_empty("request_id", &record.request_id)?;
     ensure_non_empty("model_id", &record.model_id)?;
     ensure_non_empty("source_file", &record.source_file)?;
@@ -84,7 +85,7 @@ mod tests {
 
     fn make_record(request_id: &str, output_tokens: u64) -> TokenRecord {
         TokenRecord {
-            provider: "claude-code".into(),
+            provider: crate::domain::provider::ProviderId::ClaudeCode,
             request_id: request_id.into(),
             session_id: "sess1".into(),
             uuid: "uuid1".into(),
@@ -156,7 +157,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let claude = make_record("shared-request", 42);
         let mut codex = make_record("shared-request", 84);
-        codex.provider = "codex".into();
+        codex.provider = crate::domain::provider::ProviderId::Codex;
         codex.model = ModelFamily::Unknown;
         codex.model_id = "gpt-5.1-codex".into();
 
@@ -211,13 +212,13 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_rejects_empty_required_identity_fields() {
+    fn test_insert_rejects_empty_required_identity_fields_except_typed_provider() {
         let db = Database::open_in_memory().unwrap();
         let mut record = make_record("bad", 10);
-        record.provider.clear();
+        record.request_id.clear();
 
         let err = db.insert_records(&[record]).unwrap_err().to_string();
-        assert!(err.contains("provider must not be empty"));
+        assert!(err.contains("request_id must not be empty"));
 
         let count: i64 = db
             .conn()

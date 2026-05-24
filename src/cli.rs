@@ -3,7 +3,9 @@ use clap::{Parser, ValueEnum};
 
 use crate::db::query::QueryFilter;
 use crate::domain::period::TimePeriod;
-use crate::domain::provider::{ALL_PROVIDERS_LABEL, CLAUDE_CODE_PROVIDER, CODEX_PROVIDER};
+use crate::domain::provider::{
+    ALL_PROVIDERS_LABEL, CLAUDE_CODE_PROVIDER, CODEX_PROVIDER, ProviderId,
+};
 use crate::ingest::ProviderSelection;
 
 /// Metric to use for chart/heatmap rendering.
@@ -27,7 +29,7 @@ impl From<ProviderArg> for ProviderSelection {
     fn from(value: ProviderArg) -> Self {
         match value {
             ProviderArg::All => Self::All,
-            ProviderArg::ClaudeCode => Self::Claude,
+            ProviderArg::ClaudeCode => Self::ClaudeCode,
             ProviderArg::Codex => Self::Codex,
         }
     }
@@ -313,8 +315,8 @@ impl Cli {
     pub fn query_filter(&self) -> QueryFilter {
         let provider = match self.provider {
             ProviderArg::All => None,
-            ProviderArg::ClaudeCode => Some(CLAUDE_CODE_PROVIDER.to_string()),
-            ProviderArg::Codex => Some(CODEX_PROVIDER.to_string()),
+            ProviderArg::ClaudeCode => Some(ProviderId::ClaudeCode),
+            ProviderArg::Codex => Some(ProviderId::Codex),
         };
         QueryFilter {
             begin: self.begin,
@@ -376,7 +378,7 @@ mod tests {
     fn test_provider_flag_parses_codex() {
         let cli = Cli::parse_from(["tkstat", "--provider", "codex"]);
         assert!(matches!(cli.provider.into(), ProviderSelection::Codex));
-        assert_eq!(cli.query_filter().provider.as_deref(), Some("codex"));
+        assert_eq!(cli.query_filter().provider, Some(ProviderId::Codex));
     }
 
     #[test]
@@ -384,20 +386,20 @@ mod tests {
         let canonical = Cli::parse_from(["tkstat", "--provider", "claude-code"]);
         assert!(matches!(
             canonical.provider.into(),
-            ProviderSelection::Claude
+            ProviderSelection::ClaudeCode
         ));
         assert_eq!(
-            canonical.query_filter().provider.as_deref(),
-            Some("claude-code")
+            canonical.query_filter().provider,
+            Some(ProviderId::ClaudeCode)
         );
         assert_eq!(canonical.provider_label(), "claude-code");
 
         let alias = Cli::parse_from(["tkstat", "--provider", "claude"]);
-        assert!(matches!(alias.provider.into(), ProviderSelection::Claude));
-        assert_eq!(
-            alias.query_filter().provider.as_deref(),
-            Some("claude-code")
-        );
+        assert!(matches!(
+            alias.provider.into(),
+            ProviderSelection::ClaudeCode
+        ));
+        assert_eq!(alias.query_filter().provider, Some(ProviderId::ClaudeCode));
         assert_eq!(alias.provider_label(), "claude-code");
     }
 

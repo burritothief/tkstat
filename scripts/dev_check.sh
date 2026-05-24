@@ -63,6 +63,7 @@ run cargo test
 
 if [[ "$skip_e2e" == "0" ]]; then
   run "$script_dir/e2e_smoke.sh"
+  run "$script_dir/script_smoke.sh"
 fi
 
 printf 'tkstat development checks passed\n'

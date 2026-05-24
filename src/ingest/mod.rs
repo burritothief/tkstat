@@ -8,6 +8,7 @@ use anyhow::Result;
 use rusqlite::OptionalExtension;
 
 use crate::db::Database;
+use crate::domain::provider::ProviderId;
 use crate::domain::usage::TokenRecord;
 use crate::ingest::walker::SourceFile;
 
@@ -20,7 +21,7 @@ pub struct ParsedFile {
 
 /// Provider-specific source discovery and parsing.
 pub trait ProviderAdapter {
-    fn provider(&self) -> &'static str;
+    fn provider(&self) -> ProviderId;
     fn discover(&self) -> Result<Vec<SourceFile>>;
     fn parse_file(&self, path: &Path, offset: u64, file_info: &SourceFile) -> Result<ParsedFile>;
 }
@@ -39,8 +40,8 @@ impl ClaudeCodeAdapter {
 }
 
 impl ProviderAdapter for ClaudeCodeAdapter {
-    fn provider(&self) -> &'static str {
-        claude::CLAUDE_PROVIDER
+    fn provider(&self) -> ProviderId {
+        ProviderId::ClaudeCode
     }
 
     fn discover(&self) -> Result<Vec<SourceFile>> {
@@ -66,8 +67,8 @@ impl CodexAdapter {
 }
 
 impl ProviderAdapter for CodexAdapter {
-    fn provider(&self) -> &'static str {
-        codex::CODEX_PROVIDER
+    fn provider(&self) -> ProviderId {
+        ProviderId::Codex
     }
 
     fn discover(&self) -> Result<Vec<SourceFile>> {
@@ -82,7 +83,7 @@ impl ProviderAdapter for CodexAdapter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderSelection {
     All,
-    Claude,
+    ClaudeCode,
     Codex,
 }
 
@@ -113,7 +114,7 @@ pub enum IngestFindingKind {
 
 #[derive(Debug, Clone)]
 pub struct IngestFinding {
-    pub provider: &'static str,
+    pub provider: ProviderId,
     pub path: PathBuf,
     pub severity: IngestFindingSeverity,
     pub kind: IngestFindingKind,
@@ -122,7 +123,7 @@ pub struct IngestFinding {
 
 #[derive(Debug, Clone)]
 pub struct ProviderIngestReport {
-    pub provider: &'static str,
+    pub provider: ProviderId,
     pub path: Option<PathBuf>,
     pub status: ProviderIngestStatus,
     pub discovered_files: usize,
@@ -168,7 +169,7 @@ pub fn sync_with_report(
     let mut report = IngestReport::default();
     if matches!(
         selection,
-        ProviderSelection::All | ProviderSelection::Claude
+        ProviderSelection::All | ProviderSelection::ClaudeCode
     ) {
         match &sources.claude_data_dir {
             Some(data_dir) => {
@@ -182,7 +183,7 @@ pub fn sync_with_report(
             }
             None => report
                 .providers
-                .push(unconfigured_provider_report(db, claude::CLAUDE_PROVIDER)?),
+                .push(unconfigured_provider_report(db, ProviderId::ClaudeCode)?),
         }
     }
 
@@ -199,7 +200,7 @@ pub fn sync_with_report(
             }
             None => report
                 .providers
-                .push(unconfigured_provider_report(db, codex::CODEX_PROVIDER)?),
+                .push(unconfigured_provider_report(db, ProviderId::Codex)?),
         }
     }
 
@@ -324,7 +325,7 @@ pub fn sync_provider_with_report(
 
 fn unconfigured_provider_report(
     db: &Database,
-    provider: &'static str,
+    provider: ProviderId,
 ) -> Result<ProviderIngestReport> {
     Ok(ProviderIngestReport {
         provider,
@@ -339,12 +340,12 @@ fn unconfigured_provider_report(
     })
 }
 
-fn latest_ingested_at(db: &Database, provider: &str) -> Result<Option<String>> {
+fn latest_ingested_at(db: &Database, provider: ProviderId) -> Result<Option<String>> {
     Ok(db
         .conn()
         .query_row(
             "SELECT MAX(last_ingested_at) FROM file_state WHERE provider = ?1",
-            [provider],
+            [provider.as_str()],
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()?
@@ -387,8 +388,8 @@ mod tests {
     }
 
     impl ProviderAdapter for FailingAdapter {
-        fn provider(&self) -> &'static str {
-            "failing-provider"
+        fn provider(&self) -> crate::domain::provider::ProviderId {
+            crate::domain::provider::ProviderId::Codex
         }
 
         fn discover(&self) -> Result<Vec<SourceFile>> {
@@ -434,7 +435,10 @@ mod tests {
 
         let parsed = adapter.parse_file(&files[0].path, 0, &files[0]).unwrap();
         assert_eq!(parsed.records.len(), 1);
-        assert_eq!(parsed.records[0].provider, claude::CLAUDE_PROVIDER);
+        assert_eq!(
+            parsed.records[0].provider,
+            crate::domain::provider::ProviderId::ClaudeCode
+        );
         assert_eq!(parsed.records[0].model_id, "claude-sonnet-4-5-20250929");
 
         fs::remove_dir_all(projects_dir.parent().unwrap().parent().unwrap()).unwrap();
@@ -453,7 +457,7 @@ mod tests {
         assert_eq!(sync_provider(&db, &adapter, false).unwrap(), 1);
         assert_eq!(sync_provider(&db, &adapter, false).unwrap(), 0);
         assert!(
-            db.get_file_state(claude::CLAUDE_PROVIDER, &path)
+            db.get_file_state(crate::domain::provider::ProviderId::ClaudeCode, &path)
                 .unwrap()
                 .is_some()
         );
@@ -479,14 +483,17 @@ mod tests {
         assert_eq!(report.inserted_records, 0);
         assert_eq!(report.parse_errors, 1);
         assert_eq!(report.findings.len(), 1);
-        assert_eq!(report.findings[0].provider, claude::CLAUDE_PROVIDER);
+        assert_eq!(
+            report.findings[0].provider,
+            crate::domain::provider::ProviderId::ClaudeCode
+        );
         assert_eq!(report.findings[0].path, path);
         assert_eq!(report.findings[0].severity, IngestFindingSeverity::Warning);
         assert_eq!(report.findings[0].kind, IngestFindingKind::MalformedLine);
         assert!(report.findings[0].message.contains("malformed JSONL"));
         assert!(report.last_ingested_at.is_some());
         assert!(
-            db.get_file_state(claude::CLAUDE_PROVIDER, &path)
+            db.get_file_state(crate::domain::provider::ProviderId::ClaudeCode, &path)
                 .unwrap()
                 .is_some()
         );
@@ -523,14 +530,14 @@ mod tests {
         assert_eq!(report.parse_errors, 0);
         assert_eq!(report.findings.len(), 2);
         assert!(report.findings.iter().any(|finding| {
-            finding.provider == "failing-provider"
+            finding.provider == "codex"
                 && finding.path == unreadable
                 && finding.severity == IngestFindingSeverity::Error
                 && finding.kind == IngestFindingKind::FileError
                 && finding.message.contains("permission denied")
         }));
         assert!(report.findings.iter().any(|finding| {
-            finding.provider == "failing-provider"
+            finding.provider == "codex"
                 && finding.path == parser_failure
                 && finding.severity == IngestFindingSeverity::Error
                 && finding.kind == IngestFindingKind::FileError
@@ -557,7 +564,7 @@ mod tests {
         assert_eq!(sync_provider(&db, &adapter, false).unwrap(), 1);
 
         let state = db
-            .get_file_state(claude::CLAUDE_PROVIDER, &path)
+            .get_file_state(crate::domain::provider::ProviderId::ClaudeCode, &path)
             .unwrap()
             .unwrap();
         assert_eq!(state.last_byte_offset, first.len() as i64 + 1);
@@ -592,7 +599,7 @@ mod tests {
         assert_eq!(first.inserted_records, 1);
 
         let state = db
-            .get_file_state(claude::CLAUDE_PROVIDER, &path)
+            .get_file_state(crate::domain::provider::ProviderId::ClaudeCode, &path)
             .unwrap()
             .unwrap();
         assert_eq!(state.last_byte_offset, complete.len() as i64 + 1);
@@ -620,7 +627,7 @@ mod tests {
         assert_eq!(first.inserted_records, 1);
 
         let state = db
-            .get_file_state(claude::CLAUDE_PROVIDER, &path)
+            .get_file_state(crate::domain::provider::ProviderId::ClaudeCode, &path)
             .unwrap()
             .unwrap();
         assert_eq!(state.last_byte_offset, state.size_bytes);
@@ -653,7 +660,7 @@ mod tests {
         assert_eq!(sync_provider(&db, &adapter, false).unwrap(), 1);
 
         let state = db
-            .get_file_state(claude::CLAUDE_PROVIDER, &path)
+            .get_file_state(crate::domain::provider::ProviderId::ClaudeCode, &path)
             .unwrap()
             .unwrap();
         assert_eq!(state.last_byte_offset, replacement.len() as i64 + 1);
@@ -702,7 +709,7 @@ mod tests {
         let claude = crate::db::query::query_summary(
             db.conn(),
             &crate::db::query::QueryFilter {
-                provider: Some("claude-code".into()),
+                provider: Some(crate::domain::provider::ProviderId::ClaudeCode),
                 include_subagents: true,
                 ..Default::default()
             },
@@ -711,7 +718,7 @@ mod tests {
         let codex = crate::db::query::query_summary(
             db.conn(),
             &crate::db::query::QueryFilter {
-                provider: Some("codex".into()),
+                provider: Some(crate::domain::provider::ProviderId::Codex),
                 include_subagents: true,
                 ..Default::default()
             },

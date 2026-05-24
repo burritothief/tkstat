@@ -9,6 +9,7 @@ use anyhow::{Result, bail};
 use rusqlite::Connection;
 
 use crate::domain::pricing::PricingInterval;
+use crate::domain::provider::ProviderId;
 use crate::domain::usage::TokenRecord;
 
 /// File tracking state for incremental ingestion.
@@ -72,18 +73,21 @@ impl Database {
         pricing::calculate_record_cost(&self.conn, record)
     }
 
-    pub fn get_file_state(&self, provider: &str, path: &Path) -> Result<Option<FileState>> {
+    pub fn get_file_state(&self, provider: ProviderId, path: &Path) -> Result<Option<FileState>> {
         let path_str = path.to_string_lossy();
         let mut stmt = self.conn.prepare_cached(
             "SELECT size_bytes, mtime_secs, last_byte_offset FROM file_state WHERE provider = ?1 AND path = ?2",
         )?;
-        let mut rows = stmt.query_map(rusqlite::params![provider, path_str.as_ref()], |row| {
-            Ok(FileState {
-                size_bytes: row.get(0)?,
-                mtime_secs: row.get(1)?,
-                last_byte_offset: row.get(2)?,
-            })
-        })?;
+        let mut rows = stmt.query_map(
+            rusqlite::params![provider.as_str(), path_str.as_ref()],
+            |row| {
+                Ok(FileState {
+                    size_bytes: row.get(0)?,
+                    mtime_secs: row.get(1)?,
+                    last_byte_offset: row.get(2)?,
+                })
+            },
+        )?;
         match rows.next() {
             Some(Ok(state)) => Ok(Some(state)),
             Some(Err(e)) => Err(e.into()),
@@ -93,7 +97,7 @@ impl Database {
 
     pub fn update_file_state(
         &self,
-        provider: &str,
+        provider: ProviderId,
         path: &Path,
         size_bytes: u64,
         mtime_secs: i64,
@@ -105,7 +109,7 @@ impl Database {
             "INSERT OR REPLACE INTO file_state (provider, path, size_bytes, mtime_secs, last_byte_offset, last_ingested_at)
              VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
             rusqlite::params![
-                provider,
+                provider.as_str(),
                 path.to_string_lossy().as_ref(),
                 size_bytes,
                 mtime_secs,
@@ -153,10 +157,23 @@ mod tests {
     fn test_file_state_roundtrip() {
         let db = Database::open_in_memory().unwrap();
         let path = PathBuf::from("/test/file.jsonl");
-        assert!(db.get_file_state("claude-code", &path).unwrap().is_none());
-        db.update_file_state("claude-code", &path, 1024, 100000, 1024)
+        assert!(
+            db.get_file_state(crate::domain::provider::ProviderId::ClaudeCode, &path)
+                .unwrap()
+                .is_none()
+        );
+        db.update_file_state(
+            crate::domain::provider::ProviderId::ClaudeCode,
+            &path,
+            1024,
+            100000,
+            1024,
+        )
+        .unwrap();
+        let state = db
+            .get_file_state(crate::domain::provider::ProviderId::ClaudeCode, &path)
+            .unwrap()
             .unwrap();
-        let state = db.get_file_state("claude-code", &path).unwrap().unwrap();
         assert_eq!(state.size_bytes, 1024);
         assert_eq!(state.mtime_secs, 100000);
     }
@@ -165,11 +182,26 @@ mod tests {
     fn test_file_state_update() {
         let db = Database::open_in_memory().unwrap();
         let path = PathBuf::from("/test/file.jsonl");
-        db.update_file_state("claude-code", &path, 1024, 100000, 1024)
+        db.update_file_state(
+            crate::domain::provider::ProviderId::ClaudeCode,
+            &path,
+            1024,
+            100000,
+            1024,
+        )
+        .unwrap();
+        db.update_file_state(
+            crate::domain::provider::ProviderId::ClaudeCode,
+            &path,
+            2048,
+            200000,
+            2048,
+        )
+        .unwrap();
+        let state = db
+            .get_file_state(crate::domain::provider::ProviderId::ClaudeCode, &path)
+            .unwrap()
             .unwrap();
-        db.update_file_state("claude-code", &path, 2048, 200000, 2048)
-            .unwrap();
-        let state = db.get_file_state("claude-code", &path).unwrap().unwrap();
         assert_eq!(state.size_bytes, 2048);
     }
 
@@ -177,13 +209,31 @@ mod tests {
     fn test_file_state_provider_paths_do_not_collide() {
         let db = Database::open_in_memory().unwrap();
         let path = PathBuf::from("/test/shared.jsonl");
-        db.update_file_state("claude-code", &path, 1024, 100000, 1024)
-            .unwrap();
-        db.update_file_state("codex", &path, 2048, 200000, 2048)
-            .unwrap();
+        db.update_file_state(
+            crate::domain::provider::ProviderId::ClaudeCode,
+            &path,
+            1024,
+            100000,
+            1024,
+        )
+        .unwrap();
+        db.update_file_state(
+            crate::domain::provider::ProviderId::Codex,
+            &path,
+            2048,
+            200000,
+            2048,
+        )
+        .unwrap();
 
-        let claude = db.get_file_state("claude-code", &path).unwrap().unwrap();
-        let codex = db.get_file_state("codex", &path).unwrap().unwrap();
+        let claude = db
+            .get_file_state(crate::domain::provider::ProviderId::ClaudeCode, &path)
+            .unwrap()
+            .unwrap();
+        let codex = db
+            .get_file_state(crate::domain::provider::ProviderId::Codex, &path)
+            .unwrap()
+            .unwrap();
         assert_eq!(claude.size_bytes, 1024);
         assert_eq!(codex.size_bytes, 2048);
     }
@@ -193,14 +243,26 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let path = PathBuf::from("/test/file.jsonl");
         let err = db
-            .update_file_state("claude-code", &path, i64::MAX as u64 + 1, 100000, 1024)
+            .update_file_state(
+                crate::domain::provider::ProviderId::ClaudeCode,
+                &path,
+                i64::MAX as u64 + 1,
+                100000,
+                1024,
+            )
             .unwrap_err()
             .to_string();
         assert!(err.contains("size_bytes"));
         assert!(err.contains("exceeds SQLite INTEGER range"));
 
         let err = db
-            .update_file_state("claude-code", &path, 1024, 100000, i64::MAX as u64 + 1)
+            .update_file_state(
+                crate::domain::provider::ProviderId::ClaudeCode,
+                &path,
+                1024,
+                100000,
+                i64::MAX as u64 + 1,
+            )
             .unwrap_err()
             .to_string();
         assert!(err.contains("last_byte_offset"));
@@ -210,10 +272,20 @@ mod tests {
     fn test_reset_clears_data() {
         let db = Database::open_in_memory().unwrap();
         let path = PathBuf::from("/test/file.jsonl");
-        db.update_file_state("claude-code", &path, 1024, 100000, 1024)
-            .unwrap();
+        db.update_file_state(
+            crate::domain::provider::ProviderId::ClaudeCode,
+            &path,
+            1024,
+            100000,
+            1024,
+        )
+        .unwrap();
         db.reset().unwrap();
-        assert!(db.get_file_state("claude-code", &path).unwrap().is_none());
+        assert!(
+            db.get_file_state(crate::domain::provider::ProviderId::ClaudeCode, &path)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -232,7 +304,7 @@ mod tests {
 
         let interval = crate::db::pricing::applicable_interval(
             db.conn(),
-            "codex",
+            crate::domain::provider::ProviderId::Codex,
             "gpt-5.4",
             TokenCategory::Input,
             "2026-05-24T00:00:00Z".parse().unwrap(),
@@ -251,7 +323,7 @@ mod tests {
 
         let selected = crate::db::pricing::applicable_interval(
             db.conn(),
-            "codex",
+            crate::domain::provider::ProviderId::Codex,
             "gpt-5.4",
             TokenCategory::Input,
             "2026-05-24T00:00:00Z".parse().unwrap(),
@@ -260,7 +332,7 @@ mod tests {
         assert_eq!(selected.rate_per_1m_tokens, interval.rate_per_1m_tokens);
 
         let custom = PricingInterval::usd(
-            "codex",
+            crate::domain::provider::ProviderId::Codex,
             "gpt-reset-check",
             TokenCategory::Input,
             1.0,
@@ -272,7 +344,7 @@ mod tests {
         assert!(
             crate::db::pricing::applicable_interval(
                 db.conn(),
-                "codex",
+                crate::domain::provider::ProviderId::Codex,
                 "gpt-reset-check",
                 TokenCategory::Input,
                 "2026-05-24T00:00:00Z".parse().unwrap(),
