@@ -253,6 +253,131 @@ fn test_token_only_reports_do_not_require_pricing_but_cost_reports_do() {
 }
 
 #[test]
+fn test_cost_report_missing_component_modifier_writes_no_json_stdout() {
+    let root = temp_root("pricing-missing-component-modifier");
+    fs::create_dir_all(&root).unwrap();
+    let projects = root.join("empty-projects");
+    fs::create_dir_all(&projects).unwrap();
+    let db = root.join("tkstat.db");
+    let database = Database::open(&db).unwrap();
+    database
+        .insert_pricing_interval(&PricingInterval::usd(
+            tkstat::domain::provider::ProviderId::ClaudeCode,
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            10.0,
+            "2026-01-01T00:00:00Z".parse().unwrap(),
+            "e2e",
+        ))
+        .unwrap();
+    let mut record = cli_claude_record("missing-modifier", "2026-04-07T10:00:00Z");
+    record.speed = Some("fast".into());
+    database.insert_records(&[record]).unwrap();
+    drop(database);
+
+    let output = run_tkstat(
+        &root,
+        [
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+            "--provider",
+            "claude-code",
+            "--json",
+            "-d",
+        ],
+    );
+    assert_failure(&output);
+    assert!(
+        output.stdout.is_empty(),
+        "pricing failure should not write JSON stdout; stdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("missing pricing coverage"));
+    assert_eq!(stderr_field_value(&stderr, "provider"), Some("claude-code"));
+    assert_eq!(
+        stderr_field_value(&stderr, "model"),
+        Some("claude-opus-4-6")
+    );
+    assert_eq!(stderr_field_value(&stderr, "category"), Some("input"));
+    assert!(stderr.contains("speed=fast"));
+    assert!(
+        stderr.contains("usage range 2026-04-07T10:00:00+00:00 to 2026-04-07T10:00:00+00:00"),
+        "stderr did not contain usage range:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn test_cost_report_overlapping_component_prices_writes_no_csv_stdout() {
+    let root = temp_root("pricing-overlapping-component-prices");
+    fs::create_dir_all(&root).unwrap();
+    let projects = root.join("empty-projects");
+    fs::create_dir_all(&projects).unwrap();
+    let db = root.join("tkstat.db");
+    let database = Database::open(&db).unwrap();
+    for (from, rate) in [
+        ("2026-01-01T00:00:00Z", 10.0),
+        ("2026-02-01T00:00:00Z", 20.0),
+    ] {
+        database
+            .insert_pricing_interval(&PricingInterval::usd(
+                tkstat::domain::provider::ProviderId::ClaudeCode,
+                "claude-opus-4-6",
+                TokenCategory::Input,
+                rate,
+                from.parse().unwrap(),
+                "e2e",
+            ))
+            .unwrap();
+    }
+    database
+        .insert_records(&[cli_claude_record(
+            "overlapping-prices",
+            "2026-04-07T10:00:00Z",
+        )])
+        .unwrap();
+    drop(database);
+
+    let output = run_tkstat(
+        &root,
+        [
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+            "--provider",
+            "claude-code",
+            "--csv",
+            "-d",
+        ],
+    );
+    assert_failure(&output);
+    assert!(
+        output.stdout.is_empty(),
+        "pricing overlap failure should not write CSV stdout; stdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("overlapping pricing intervals"));
+    assert_eq!(stderr_field_value(&stderr, "provider"), Some("claude-code"));
+    assert_eq!(
+        stderr_field_value(&stderr, "model"),
+        Some("claude-opus-4-6")
+    );
+    assert_eq!(stderr_field_value(&stderr, "category"), Some("input"));
+    assert!(
+        stderr.contains("usage range 2026-04-07T10:00:00+00:00 to 2026-04-07T10:00:00+00:00"),
+        "stderr did not contain usage range:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn test_pricing_audit_missing_database_is_read_only() {
     let root = temp_root("pricing-audit-missing-db");
     let db = root.join("missing.db");
@@ -275,6 +400,34 @@ fn test_pricing_audit_missing_database_is_read_only() {
     );
 
     let _ = fs::remove_dir_all(root);
+}
+
+fn cli_claude_record(request_id: &str, timestamp: &str) -> TokenRecord {
+    TokenRecord {
+        provider: tkstat::domain::provider::ProviderId::ClaudeCode,
+        request_id: request_id.into(),
+        session_id: "cli-pricing-session".into(),
+        uuid: format!("{request_id}-uuid"),
+        timestamp: timestamp.parse().unwrap(),
+        model: ModelFamily::Opus,
+        model_id: "claude-opus-4-6".into(),
+        input_tokens: 1_000_000,
+        output_tokens: 0,
+        cache_creation_tokens: 0,
+        cache_read_tokens: 0,
+        cached_input_tokens: 0,
+        reasoning_output_tokens: 0,
+        cache_creation_5m_tokens: 0,
+        cache_creation_1h_tokens: 0,
+        service_tier: None,
+        speed: None,
+        region: None,
+        processing_mode: None,
+        cost_usd: 0.0,
+        project: "pricing-e2e".into(),
+        source_file: "/pricing-e2e.jsonl".into(),
+        is_subagent: false,
+    }
 }
 
 #[test]

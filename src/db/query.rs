@@ -48,7 +48,8 @@ pub fn query_by_period_with_cost_requirement(
     validate_pricing_if_required(conn, filter, cost_required)?;
     let group_expr = period_group_expr(period, filter.report_timezone);
     let (where_clause, params) = build_where_clause(filter);
-    let cost_expr = cost_sql_expr(cost_required);
+    let cost_join = cost_join_sql(cost_required);
+    let cost_expr = cost_aggregate_sql(cost_required);
 
     let sql = format!(
         "SELECT
@@ -60,12 +61,13 @@ pub fn query_by_period_with_cost_requirement(
             SUM(cached_input_tokens),
             SUM(reasoning_output_tokens),
             SUM(total_tokens),
-            SUM({cost_expr}),
+            {cost_expr},
             COUNT(*),
-            COUNT(DISTINCT provider || ':' || session_id),
+            COUNT(DISTINCT token_usage.provider || ':' || token_usage.session_id),
             MIN(timestamp),
             MAX(timestamp)
          FROM token_usage
+         {cost_join}
          WHERE 1=1 {where_clause}
          GROUP BY {group_expr}
          ORDER BY {group_expr} ASC",
@@ -105,7 +107,8 @@ pub fn query_top_with_cost_requirement(
 ) -> Result<Vec<AggregatedRow>> {
     validate_pricing_if_required(conn, filter, cost_required)?;
     let (where_clause, params) = build_where_clause(filter);
-    let cost_expr = cost_sql_expr(cost_required);
+    let cost_join = cost_join_sql(cost_required);
+    let cost_expr = cost_aggregate_sql(cost_required);
     let daily_expr = report_day_expr(filter.report_timezone);
 
     let sql = format!(
@@ -118,10 +121,11 @@ pub fn query_top_with_cost_requirement(
             SUM(cached_input_tokens),
             SUM(reasoning_output_tokens),
             SUM(total_tokens),
-            SUM({cost_expr}),
+            {cost_expr},
             COUNT(*),
-            COUNT(DISTINCT provider || ':' || session_id)
+            COUNT(DISTINCT token_usage.provider || ':' || token_usage.session_id)
          FROM token_usage
+         {cost_join}
          WHERE 1=1 {where_clause}
          GROUP BY {daily_expr}
          ORDER BY SUM(total_tokens) DESC
@@ -158,12 +162,13 @@ pub fn query_by_model_with_cost_requirement(
 ) -> Result<Vec<AggregatedRow>> {
     validate_pricing_if_required(conn, filter, cost_required)?;
     let (where_clause, params) = build_where_clause(filter);
-    let cost_expr = cost_sql_expr(cost_required);
+    let cost_join = cost_join_sql(cost_required);
+    let cost_expr = cost_aggregate_sql(cost_required);
 
     let sql = format!(
         "SELECT
-            provider,
-            model_id,
+            token_usage.provider,
+            token_usage.model_id,
             SUM(input_tokens),
             SUM(output_tokens),
             SUM(cache_creation_tokens),
@@ -171,13 +176,14 @@ pub fn query_by_model_with_cost_requirement(
             SUM(cached_input_tokens),
             SUM(reasoning_output_tokens),
             SUM(total_tokens),
-            SUM({cost_expr}),
+            {cost_expr},
             COUNT(*),
-            COUNT(DISTINCT provider || ':' || session_id)
+            COUNT(DISTINCT token_usage.provider || ':' || token_usage.session_id)
          FROM token_usage
+         {cost_join}
          WHERE 1=1 {where_clause}
-         GROUP BY provider, model_id
-         ORDER BY SUM(total_tokens) DESC, provider ASC, model_id ASC
+         GROUP BY token_usage.provider, token_usage.model_id
+         ORDER BY SUM(total_tokens) DESC, token_usage.provider ASC, token_usage.model_id ASC
          LIMIT ?"
     );
 
@@ -230,11 +236,12 @@ pub fn query_by_provider_with_cost_requirement(
 ) -> Result<Vec<AggregatedRow>> {
     validate_pricing_if_required(conn, filter, cost_required)?;
     let (where_clause, params) = build_where_clause(filter);
-    let cost_expr = cost_sql_expr(cost_required);
+    let cost_join = cost_join_sql(cost_required);
+    let cost_expr = cost_aggregate_sql(cost_required);
 
     let sql = format!(
         "SELECT
-            provider,
+            token_usage.provider,
             SUM(input_tokens),
             SUM(output_tokens),
             SUM(cache_creation_tokens),
@@ -242,13 +249,14 @@ pub fn query_by_provider_with_cost_requirement(
             SUM(cached_input_tokens),
             SUM(reasoning_output_tokens),
             SUM(total_tokens),
-            SUM({cost_expr}),
+            {cost_expr},
             COUNT(*),
-            COUNT(DISTINCT provider || ':' || session_id)
+            COUNT(DISTINCT token_usage.provider || ':' || token_usage.session_id)
          FROM token_usage
+         {cost_join}
          WHERE 1=1 {where_clause}
-         GROUP BY provider
-         ORDER BY SUM(total_tokens) DESC, provider ASC
+         GROUP BY token_usage.provider
+         ORDER BY SUM(total_tokens) DESC, token_usage.provider ASC
          LIMIT ?"
     );
 
@@ -299,7 +307,8 @@ pub fn query_by_project_with_cost_requirement(
 ) -> Result<Vec<AggregatedRow>> {
     validate_pricing_if_required(conn, filter, cost_required)?;
     let (where_clause, params) = build_where_clause(filter);
-    let cost_expr = cost_sql_expr(cost_required);
+    let cost_join = cost_join_sql(cost_required);
+    let cost_expr = cost_aggregate_sql(cost_required);
     let project_expr = "COALESCE(NULLIF(project, ''), 'unknown')";
 
     let sql = format!(
@@ -312,10 +321,11 @@ pub fn query_by_project_with_cost_requirement(
             SUM(cached_input_tokens),
             SUM(reasoning_output_tokens),
             SUM(total_tokens),
-            SUM({cost_expr}),
+            {cost_expr},
             COUNT(*),
-            COUNT(DISTINCT provider || ':' || session_id)
+            COUNT(DISTINCT token_usage.provider || ':' || token_usage.session_id)
          FROM token_usage
+         {cost_join}
          WHERE 1=1 {where_clause}
          GROUP BY {project_expr}
          ORDER BY SUM(total_tokens) DESC, project_name ASC
@@ -356,7 +366,8 @@ pub fn query_by_project_with_cost_requirement(
 pub fn query_summary(conn: &Connection, filter: &QueryFilter) -> Result<AggregatedRow> {
     validate_pricing_coverage(conn, filter)?;
     let (where_clause, params) = build_where_clause(filter);
-    let cost_expr = cost_sql_expr(true);
+    let cost_join = cost_join_sql(true);
+    let cost_expr = cost_aggregate_sql(true);
 
     let sql = format!(
         "SELECT
@@ -368,10 +379,11 @@ pub fn query_summary(conn: &Connection, filter: &QueryFilter) -> Result<Aggregat
             COALESCE(SUM(cached_input_tokens), 0),
             COALESCE(SUM(reasoning_output_tokens), 0),
             COALESCE(SUM(total_tokens), 0),
-            COALESCE(SUM({cost_expr}), 0.0),
+            {cost_expr},
             COUNT(*),
-            COUNT(DISTINCT provider || ':' || session_id)
+            COUNT(DISTINCT token_usage.provider || ':' || token_usage.session_id)
          FROM token_usage
+         {cost_join}
          WHERE 1=1 {where_clause}"
     );
 
@@ -409,7 +421,8 @@ pub fn query_daily_totals_with_cost_requirement(
 ) -> Result<Vec<DailyTotal>> {
     validate_pricing_if_required(conn, filter, cost_required)?;
     let (where_clause, params) = build_where_clause(filter);
-    let cost_expr = cost_sql_expr(cost_required);
+    let cost_join = cost_join_sql(cost_required);
+    let cost_expr = cost_aggregate_sql(cost_required);
     let daily_expr = report_day_expr(filter.report_timezone);
 
     let sql = format!(
@@ -418,8 +431,9 @@ pub fn query_daily_totals_with_cost_requirement(
             SUM(total_tokens),
             SUM(input_tokens),
             SUM(output_tokens),
-            SUM({cost_expr})
+            {cost_expr}
          FROM token_usage
+         {cost_join}
          WHERE 1=1 {where_clause}
          GROUP BY {daily_expr}
          ORDER BY day ASC"
@@ -478,22 +492,70 @@ fn row_to_period_aggregate(row: &rusqlite::Row<'_>) -> rusqlite::Result<PeriodAg
     })
 }
 
-fn cost_sql_expr(cost_required: bool) -> String {
+fn cost_join_sql(cost_required: bool) -> &'static str {
+    if !cost_required {
+        return "";
+    }
+
+    "LEFT JOIN (
+        SELECT
+            c.provider,
+            c.request_id,
+            COUNT(DISTINCT c.id) AS component_count,
+            CASE
+                WHEN COUNT(p.id) = COUNT(DISTINCT c.id)
+                THEN SUM(c.tokens * p.rate_per_1m_tokens) / 1000000.0
+                ELSE NULL
+            END AS cost_usd
+        FROM usage_billing_components c
+        LEFT JOIN pricing_intervals p
+          ON p.provider = c.provider
+         AND p.model_id = c.model_id
+         AND p.token_category = c.token_category
+         AND p.service_tier IS c.service_tier
+         AND p.speed IS c.speed
+         AND p.region IS c.region
+         AND p.processing_mode IS c.processing_mode
+         AND p.source_detail IS c.source_detail
+         AND p.currency = 'USD'
+         AND p.effective_from <= c.timestamp
+         AND (p.effective_to IS NULL OR c.timestamp < p.effective_to)
+        GROUP BY c.provider, c.request_id
+    ) component_cost
+      ON component_cost.provider = token_usage.provider
+     AND component_cost.request_id = token_usage.request_id"
+}
+
+fn cost_aggregate_sql(cost_required: bool) -> String {
     if !cost_required {
         return "0.0".into();
     }
-    let terms = TokenCategory::ALL
+    let has_billable_tokens = has_billable_tokens_sql();
+    format!(
+        "CASE
+            WHEN COALESCE(SUM(
+                CASE
+                    WHEN component_cost.cost_usd IS NULL
+                     AND (
+                        component_cost.component_count IS NOT NULL
+                        OR {has_billable_tokens}
+                     )
+                    THEN 1
+                    ELSE 0
+                END
+            ), 0) > 0
+            THEN NULL
+            ELSE COALESCE(SUM(component_cost.cost_usd), 0.0)
+        END"
+    )
+}
+
+fn has_billable_tokens_sql() -> String {
+    TokenCategory::ALL
         .into_iter()
-        .map(|category| {
-            format!(
-                "{} * {}",
-                billable_tokens_sql(category),
-                price_lookup_sql(category)
-            )
-        })
+        .map(|category| format!("({}) > 0", billable_tokens_sql(category)))
         .collect::<Vec<_>>()
-        .join(" + ");
-    format!("({terms}) / 1000000.0")
+        .join(" OR ")
 }
 
 fn billable_tokens_sql(category: TokenCategory) -> String {
@@ -534,13 +596,6 @@ fn token_count_field_sql(field: TokenCountField) -> &'static str {
         TokenCountField::CachedInput => "cached_input_tokens",
         TokenCountField::ReasoningOutput => "reasoning_output_tokens",
     }
-}
-
-fn price_lookup_sql(category: TokenCategory) -> String {
-    format!(
-        "COALESCE((SELECT p.rate_per_1m_tokens FROM pricing_intervals p WHERE p.provider = token_usage.provider AND p.model_id = token_usage.model_id AND p.token_category = '{}' AND p.currency = 'USD' AND p.effective_from <= timestamp AND (p.effective_to IS NULL OR timestamp < p.effective_to)), 0)",
-        category.as_str()
-    )
 }
 
 fn validate_pricing_if_required(
@@ -780,12 +835,14 @@ fn validate_category_coverage(
         }
         if saw_covering_interval && from < cursor {
             bail!(
-                "overlapping pricing intervals for provider={}, model={}, category={}{} near {}",
+                "overlapping pricing intervals for provider={}, model={}, category={}{} near {}, usage range {} to {}",
                 key.provider,
                 key.model_id,
                 key.category,
                 dimension_suffix(&key.dimensions),
-                format_utc_rfc3339(from)
+                format_utc_rfc3339(from),
+                format_utc_rfc3339(start),
+                format_utc_rfc3339(end)
             );
         }
         saw_covering_interval = true;
@@ -802,12 +859,14 @@ fn validate_category_coverage(
             None => {
                 if let Some((next_from, _)) = intervals.get(idx + 1) {
                     bail!(
-                        "overlapping pricing intervals for provider={}, model={}, category={}{} near {}",
+                        "overlapping pricing intervals for provider={}, model={}, category={}{} near {}, usage range {} to {}",
                         key.provider,
                         key.model_id,
                         key.category,
                         dimension_suffix(&key.dimensions),
-                        next_from
+                        next_from,
+                        format_utc_rfc3339(start),
+                        format_utc_rfc3339(end)
                     );
                 }
                 return Ok(());
@@ -1086,7 +1145,7 @@ fn build_where_clause(filter: &QueryFilter) -> (String, Vec<Box<dyn rusqlite::ty
 
     if let Some(ref provider) = filter.provider {
         params.push(Box::new(provider.as_str().to_string()));
-        clauses.push(format!("AND provider = ?{}", params.len()));
+        clauses.push(format!("AND token_usage.provider = ?{}", params.len()));
     }
 
     if let Some(ref model) = filter.model {
@@ -1095,11 +1154,11 @@ fn build_where_clause(filter: &QueryFilter) -> (String, Vec<Box<dyn rusqlite::ty
         if let Ok(family) = model.parse::<ModelFamily>() {
             params.push(Box::new(family.as_str().to_string()));
             clauses.push(format!(
-                "AND (model_id = ?{exact_param} OR model_family = ?{})",
+                "AND (token_usage.model_id = ?{exact_param} OR token_usage.model_family = ?{})",
                 params.len()
             ));
         } else {
-            clauses.push(format!("AND model_id = ?{exact_param}"));
+            clauses.push(format!("AND token_usage.model_id = ?{exact_param}"));
         }
     }
 
@@ -1109,21 +1168,21 @@ fn build_where_clause(filter: &QueryFilter) -> (String, Vec<Box<dyn rusqlite::ty
             .map(|f| f.as_str().to_string())
             .unwrap_or_else(|_| family.to_ascii_lowercase());
         params.push(Box::new(parsed));
-        clauses.push(format!("AND model_family = ?{}", params.len()));
+        clauses.push(format!("AND token_usage.model_family = ?{}", params.len()));
     }
 
     if let Some(ref project) = filter.project {
         params.push(Box::new(format!("%{project}%")));
-        clauses.push(format!("AND project LIKE ?{}", params.len()));
+        clauses.push(format!("AND token_usage.project LIKE ?{}", params.len()));
     }
 
     if let Some(ref session) = filter.session {
         params.push(Box::new(format!("{session}%")));
-        clauses.push(format!("AND session_id LIKE ?{}", params.len()));
+        clauses.push(format!("AND token_usage.session_id LIKE ?{}", params.len()));
     }
 
     if !filter.include_subagents {
-        clauses.push(" AND is_subagent = 0".into());
+        clauses.push(" AND token_usage.is_subagent = 0".into());
     }
 
     (clauses.join(" "), params)
@@ -1227,6 +1286,11 @@ mod tests {
             "test",
         );
         interval.effective_to = to.map(|dt| dt.parse().unwrap());
+        interval
+    }
+
+    fn with_speed(mut interval: PricingInterval, speed: &str) -> PricingInterval {
+        interval.dimensions.speed = Some(speed.into());
         interval
     }
 
@@ -2003,6 +2067,44 @@ mod tests {
         )
         .unwrap();
         assert!((summary.cost_usd - 30.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_query_cost_joins_component_pricing_dimensions() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_pricing_interval(&price(
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            10.0,
+            "2026-01-01T00:00:00Z",
+            None,
+        ))
+        .unwrap();
+        db.insert_pricing_interval(&with_speed(
+            price(
+                "claude-opus-4-6",
+                TokenCategory::Input,
+                20.0,
+                "2026-01-01T00:00:00Z",
+                None,
+            ),
+            "fast",
+        ))
+        .unwrap();
+        let mut record = make_record("r1", "2026-04-05T10:00:00Z", "opus", "proj-a", 1_000_000, 0);
+        record.output_tokens = 0;
+        record.speed = Some("fast".into());
+        db.insert_records(&[record]).unwrap();
+
+        let summary = query_summary(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!((summary.cost_usd - 20.0).abs() < 0.001);
     }
 
     #[test]
