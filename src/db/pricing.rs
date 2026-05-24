@@ -26,6 +26,7 @@ pub enum PricingAuditKind {
     MissingDatabase,
     MissingSchema,
     MalformedCatalogRow,
+    UnsupportedProviderId,
     Gap,
     Overlap,
     DuplicateCurrent,
@@ -449,14 +450,19 @@ fn audit_usage_coverage(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
     )?;
     let mut rows = stmt.query([])?;
     let mut usage: HashMap<UsageCoverageKey, UsageCoverageRange> = HashMap::new();
+    let mut findings = Vec::new();
 
     while let Some(row) = rows.next()? {
         let provider: String = row.get(0)?;
-        let provider_id = ProviderId::from_canonical(&provider)
-            .ok_or_else(|| anyhow!("unknown provider id in usage row: {provider}"))?;
         let model_id: String = row.get(1)?;
         let timestamp: String = row.get(2)?;
         let timestamp: DateTime<Utc> = timestamp.parse()?;
+        let Some(provider_id) = ProviderId::from_canonical(&provider) else {
+            findings.push(unsupported_usage_provider_finding(
+                &provider, &model_id, timestamp,
+            ));
+            continue;
+        };
         let categories = billable_token_categories_for_counts(
             provider_id,
             row.get::<_, i64>(3)?.max(0) as u64,
@@ -477,13 +483,27 @@ fn audit_usage_coverage(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
         }
     }
 
-    let mut findings = Vec::new();
     for ((provider, model_id, category), (start, end)) in usage {
         findings.extend(audit_usage_key(
             conn, &provider, &model_id, category, start, end,
         )?);
     }
     Ok(findings)
+}
+
+fn unsupported_usage_provider_finding(
+    provider: &str,
+    model_id: &str,
+    timestamp: DateTime<Utc>,
+) -> PricingAuditFinding {
+    finding_raw(
+        PricingAuditSeverity::Error,
+        PricingAuditKind::UnsupportedProviderId,
+        raw_audit_key(provider, model_id, ""),
+        Some(timestamp.to_rfc3339()),
+        Some(timestamp.to_rfc3339()),
+        "use a supported canonical provider id such as claude-code or codex",
+    )
 }
 
 fn audit_usage_key(
@@ -1536,6 +1556,63 @@ mod tests {
                 && finding.provider == "codex"
                 && finding.model_id == "gpt-audit"
                 && finding.token_category == "cached_input"
+        }));
+    }
+
+    #[test]
+    fn test_pricing_audit_reports_unsupported_usage_provider_without_aborting() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pricing_intervals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                token_category TEXT NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'USD',
+                rate_per_1m_tokens REAL NOT NULL,
+                effective_from TEXT NOT NULL,
+                effective_to TEXT,
+                source TEXT NOT NULL
+             );
+             CREATE TABLE token_usage (
+                provider TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                uuid TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                model_family TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                cache_creation_tokens INTEGER NOT NULL,
+                cache_read_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL,
+                cost_usd REAL NOT NULL,
+                project TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                is_subagent INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO token_usage
+                (provider, request_id, session_id, uuid, timestamp, model_family, model_id,
+                 input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+                 cached_input_tokens, reasoning_output_tokens, total_tokens, cost_usd, project, source_file, is_subagent)
+             VALUES
+                ('unsupported-provider', 'r1', 's1', 'u1', '2026-04-07T10:00:00Z', 'unknown', 'legacy-model',
+                 10, 0, 0, 0, 0, 0, 10, 0.0, 'legacy', '/legacy.jsonl', 0);",
+        )
+        .unwrap();
+
+        let findings = audit_pricing(&conn).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding.kind == PricingAuditKind::UnsupportedProviderId
+                && finding.provider == "unsupported-provider"
+                && finding.model_id == "legacy-model"
+                && finding.token_category.is_empty()
+                && finding
+                    .remediation
+                    .contains("supported canonical provider id")
         }));
     }
 
