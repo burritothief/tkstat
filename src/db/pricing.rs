@@ -413,6 +413,50 @@ fn upsert_current_interval(conn: &Connection, interval: &PricingInterval) -> Res
                     format_utc_rfc3339(existing.effective_from)
                 );
             }
+            if existing.effective_from == interval.effective_from {
+                let changed = conn.execute(
+                    "UPDATE pricing_intervals
+                     SET rate_per_1m_tokens = ?1,
+                         source = ?2,
+                         effective_to = ?3
+                     WHERE provider = ?4
+                       AND model_id = ?5
+                       AND token_category = ?6
+                       AND service_tier IS ?7
+                       AND speed IS ?8
+                       AND region IS ?9
+                       AND processing_mode IS ?10
+                       AND source_detail IS ?11
+                       AND currency = ?12
+                       AND effective_from = ?13
+                       AND effective_to IS NULL",
+                    rusqlite::params![
+                        interval.rate_per_1m_tokens,
+                        interval.source,
+                        interval.effective_to.map(format_utc_rfc3339),
+                        existing.provider.as_str(),
+                        existing.model_id,
+                        existing.token_category.as_str(),
+                        existing.dimensions.service_tier,
+                        existing.dimensions.speed,
+                        existing.dimensions.region,
+                        existing.dimensions.processing_mode,
+                        existing.dimensions.source_detail,
+                        existing.currency,
+                        format_utc_rfc3339(existing.effective_from),
+                    ],
+                )?;
+                if changed != 1 {
+                    bail!(
+                        "failed to replace same-effective-date pricing interval for provider={}, model={}, category={}{}",
+                        interval.provider,
+                        interval.model_id,
+                        interval.token_category,
+                        dimension_suffix(&interval.dimensions)
+                    );
+                }
+                return Ok(changed);
+            }
             conn.execute(
                 "UPDATE pricing_intervals
                  SET effective_to = ?1
@@ -440,7 +484,15 @@ fn upsert_current_interval(conn: &Connection, interval: &PricingInterval) -> Res
                     format_utc_rfc3339(existing.effective_from),
                 ],
             )?;
-            insert_interval_if_missing(conn, interval)?;
+            if !insert_interval_if_missing(conn, interval)? {
+                bail!(
+                    "failed to insert refreshed pricing interval for provider={}, model={}, category={}, effective_from={}",
+                    interval.provider,
+                    interval.model_id,
+                    interval.token_category,
+                    format_utc_rfc3339(interval.effective_from)
+                );
+            }
             Ok(2)
         }
         None => Ok(insert_interval_if_missing(conn, interval)? as usize),
@@ -3423,6 +3475,96 @@ mod tests {
         )
         .unwrap();
         assert_eq!(selected.rate_per_1m_tokens, 15.0);
+
+        let (count, open_count): (i64, i64) = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*), SUM(CASE WHEN effective_to IS NULL THEN 1 ELSE 0 END)
+                 FROM pricing_intervals
+                 WHERE provider = 'claude-code'
+                   AND model_id = 'claude-opus-4-6'
+                   AND token_category = 'input'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(open_count, 1);
+    }
+
+    #[test]
+    fn test_refresh_pricing_replaces_same_effective_date_interval_in_place() {
+        let db = Database::open_in_memory().unwrap();
+        let mut original = interval(TokenCategory::Input, 10.0, "2026-01-01T00:00:00Z", None);
+        original.source = "seed:old-source".into();
+        insert_interval(db.conn(), &original).unwrap();
+
+        let mut corrected = interval(TokenCategory::Input, 15.0, "2026-01-01T00:00:00Z", None);
+        corrected.source = "reviewed:corrected-source".into();
+        let fetcher = MockFetcher {
+            intervals: vec![corrected],
+        };
+        assert_eq!(refresh_pricing(db.conn(), &fetcher).unwrap(), 1);
+
+        let (count, open_count, rate, source): (i64, i64, f64, String) = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*),
+                        SUM(CASE WHEN effective_to IS NULL THEN 1 ELSE 0 END),
+                        MAX(rate_per_1m_tokens),
+                        MAX(source)
+                 FROM pricing_intervals
+                 WHERE provider = 'claude-code'
+                   AND model_id = 'claude-opus-4-6'
+                   AND token_category = 'input'
+                   AND effective_from = '2026-01-01T00:00:00+00:00'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(open_count, 1);
+        assert_eq!(rate, 15.0);
+        assert_eq!(source, "reviewed:corrected-source");
+
+        let selected = applicable_interval(
+            db.conn(),
+            ProviderId::ClaudeCode,
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            "2026-04-07T10:00:00Z".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(selected.rate_per_1m_tokens, 15.0);
+    }
+
+    #[test]
+    fn test_pricing_audit_accepts_same_effective_date_replacement() {
+        let db = Database::open_in_memory().unwrap();
+        insert_interval(
+            db.conn(),
+            &interval(TokenCategory::Input, 10.0, "2026-01-01T00:00:00Z", None),
+        )
+        .unwrap();
+
+        let corrected = interval(TokenCategory::Input, 15.0, "2026-01-01T00:00:00Z", None);
+        let fetcher = MockFetcher {
+            intervals: vec![corrected],
+        };
+        refresh_pricing(db.conn(), &fetcher).unwrap();
+
+        let findings = audit_pricing(db.conn()).unwrap();
+        assert!(
+            findings.iter().all(|finding| {
+                !matches!(
+                    finding.kind,
+                    PricingAuditKind::MissingCurrent
+                        | PricingAuditKind::Gap
+                        | PricingAuditKind::Overlap
+                )
+            }),
+            "unexpected lifecycle finding after same-date replacement: {findings:?}"
+        );
     }
 
     #[test]
