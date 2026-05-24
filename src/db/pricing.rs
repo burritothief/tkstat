@@ -52,6 +52,7 @@ pub enum PricingAuditKind {
     BundledFallbackSource,
     UnknownObservedModel,
     UnsupportedModifier,
+    BillingComponentIntegrity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -651,6 +652,7 @@ pub fn audit_pricing(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
 
     let mut findings = audit_catalog(conn)?;
     if table_exists(conn, "token_usage")? {
+        findings.extend(audit_billing_component_integrity(conn)?);
         findings.extend(audit_usage_coverage(conn)?);
         findings.extend(audit_usage_source_quality(conn)?);
     } else {
@@ -659,6 +661,193 @@ pub fn audit_pricing(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
             "token_usage table is missing; run `tkstat --force-update` to ingest usage before checking coverage",
         ));
     }
+    Ok(findings)
+}
+
+fn audit_billing_component_integrity(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
+    if !table_exists(conn, "usage_billing_components")?
+        || table_row_count(conn, "usage_billing_components")? == 0
+    {
+        return Ok(Vec::new());
+    }
+
+    let mut findings = Vec::new();
+    findings.extend(audit_orphan_billing_components(conn)?);
+    findings.extend(audit_duplicate_billing_components(conn)?);
+    findings.extend(audit_component_token_totals(conn)?);
+    Ok(findings)
+}
+
+fn audit_orphan_billing_components(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.provider, c.request_id, c.model_id, c.token_category
+         FROM usage_billing_components c
+         LEFT JOIN token_usage u
+           ON u.provider = c.provider
+          AND u.request_id = c.request_id
+         WHERE u.id IS NULL
+         ORDER BY c.provider, c.request_id, c.component_ordinal",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|(provider, request_id, model_id, category)| {
+            billing_component_integrity_finding(
+                &provider,
+                &model_id,
+                &category,
+                &format!(
+                    "usage_billing_components row for request_id={request_id} has no matching token_usage row; delete orphan components or reingest usage"
+                ),
+            )
+        })
+        .collect())
+}
+
+fn audit_duplicate_billing_components(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
+    let mut stmt = conn.prepare(
+        "SELECT provider, request_id, model_id, token_category, COUNT(*)
+         FROM usage_billing_components
+         GROUP BY provider, request_id, token_category,
+                  COALESCE(service_tier, ''), COALESCE(speed, ''), COALESCE(region, ''),
+                  COALESCE(processing_mode, ''), COALESCE(source_detail, '')
+         HAVING COUNT(*) > 1
+         ORDER BY provider, request_id, token_category",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|(provider, request_id, model_id, category, count)| {
+            billing_component_integrity_finding(
+                &provider,
+                &model_id,
+                &category,
+                &format!(
+                    "request_id={request_id} has {count} duplicate billing components for the same pricing dimensions; reingest or repair usage_billing_components"
+                ),
+            )
+        })
+        .collect())
+}
+
+fn audit_component_token_totals(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
+    let mut expected = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT provider, request_id, model_id, timestamp, input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens, cached_input_tokens,
+                reasoning_output_tokens
+         FROM token_usage",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let provider: String = row.get(0)?;
+        let request_id: String = row.get(1)?;
+        let model_id: String = row.get(2)?;
+        let timestamp: String = row.get(3)?;
+        let Some(provider_id) = ProviderId::from_canonical(&provider) else {
+            continue;
+        };
+        let categories = billable_token_categories_for_counts(
+            provider_id,
+            row.get::<_, i64>(4)?.max(0) as u64,
+            row.get::<_, i64>(5)?.max(0) as u64,
+            row.get::<_, i64>(6)?.max(0) as u64,
+            row.get::<_, i64>(7)?.max(0) as u64,
+            row.get::<_, i64>(8)?.max(0) as u64,
+            row.get::<_, i64>(9)?.max(0) as u64,
+        );
+        for (category, tokens) in categories {
+            expected.insert(
+                (
+                    provider.clone(),
+                    request_id.clone(),
+                    model_id.clone(),
+                    category.as_str().to_string(),
+                ),
+                (tokens as i64, timestamp.clone()),
+            );
+        }
+    }
+
+    let mut actual = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT provider, request_id, model_id, token_category, SUM(tokens)
+         FROM usage_billing_components
+         GROUP BY provider, request_id, model_id, token_category",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        actual.insert(
+            (
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ),
+            row.get::<_, i64>(4)?,
+        );
+    }
+
+    let mut findings = Vec::new();
+    for ((provider, request_id, model_id, category), (expected_tokens, timestamp)) in &expected {
+        let actual_tokens = actual
+            .get(&(
+                provider.clone(),
+                request_id.clone(),
+                model_id.clone(),
+                category.clone(),
+            ))
+            .copied()
+            .unwrap_or(0);
+        if actual_tokens != *expected_tokens {
+            findings.push(billing_component_integrity_finding_at(
+                provider,
+                model_id,
+                category,
+                Some(timestamp.clone()),
+                &format!(
+                    "request_id={request_id} expected {expected_tokens} billable tokens from token_usage but found {actual_tokens} in usage_billing_components; reingest or repair usage_billing_components"
+                ),
+            ));
+        }
+    }
+    for ((provider, request_id, model_id, category), actual_tokens) in actual {
+        if !expected.contains_key(&(
+            provider.clone(),
+            request_id.clone(),
+            model_id.clone(),
+            category.clone(),
+        )) {
+            findings.push(billing_component_integrity_finding(
+                &provider,
+                &model_id,
+                &category,
+                &format!(
+                    "request_id={request_id} has {actual_tokens} unexpected billable tokens in usage_billing_components; reingest or repair usage_billing_components"
+                ),
+            ));
+        }
+    }
+
     Ok(findings)
 }
 
@@ -1357,6 +1546,32 @@ fn finding(
         start.map(format_utc_rfc3339),
         end.map(format_utc_rfc3339),
         &remediation,
+    )
+}
+
+fn billing_component_integrity_finding(
+    provider: &str,
+    model_id: &str,
+    category: &str,
+    remediation: &str,
+) -> PricingAuditFinding {
+    billing_component_integrity_finding_at(provider, model_id, category, None, remediation)
+}
+
+fn billing_component_integrity_finding_at(
+    provider: &str,
+    model_id: &str,
+    category: &str,
+    timestamp: Option<String>,
+    remediation: &str,
+) -> PricingAuditFinding {
+    finding_raw(
+        PricingAuditSeverity::Error,
+        PricingAuditKind::BillingComponentIntegrity,
+        raw_audit_key(provider, model_id, category),
+        timestamp.clone(),
+        timestamp,
+        remediation,
     )
 }
 
@@ -3017,6 +3232,55 @@ mod tests {
                 .iter()
                 .any(|finding| finding.kind == PricingAuditKind::UnsupportedCurrency)
         );
+    }
+
+    #[test]
+    fn test_pricing_audit_reports_billing_component_integrity_findings() {
+        let db = Database::open_in_memory().unwrap();
+        insert_interval(
+            db.conn(),
+            &interval(TokenCategory::Input, 10.0, "2026-01-01T00:00:00Z", None),
+        )
+        .unwrap();
+        insert_interval(
+            db.conn(),
+            &interval(TokenCategory::Output, 20.0, "2026-01-01T00:00:00Z", None),
+        )
+        .unwrap();
+        db.insert_records(&[record("claude-opus-4-6")]).unwrap();
+        db.conn()
+            .execute(
+                "DELETE FROM usage_billing_components
+                 WHERE provider = 'claude-code'
+                   AND request_id = 'r1'
+                   AND token_category = 'output'",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO usage_billing_components
+                 (usage_id, provider, request_id, model_id, timestamp, token_category, tokens,
+                  component_ordinal)
+                 VALUES (9999, 'claude-code', 'missing-request', 'claude-opus-4-6',
+                         '2026-04-07T10:00:00+00:00', 'input', 10, 999)",
+                [],
+            )
+            .unwrap();
+
+        let findings = audit_pricing(db.conn()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding.kind == PricingAuditKind::BillingComponentIntegrity
+                && finding
+                    .remediation
+                    .contains("expected 1000000 billable tokens")
+                && finding.remediation.contains("found 0")
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.kind == PricingAuditKind::BillingComponentIntegrity
+                && finding.remediation.contains("missing-request")
+                && finding.remediation.contains("no matching token_usage row")
+        }));
     }
 
     #[test]

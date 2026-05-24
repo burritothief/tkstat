@@ -893,6 +893,7 @@ fn validate_pricing_coverage(conn: &Connection, filter: &QueryFilter) -> Result<
     if table_exists(conn, "usage_billing_components")?
         && table_row_count(conn, "usage_billing_components")? > 0
     {
+        validate_billing_component_integrity(conn, filter)?;
         return validate_component_pricing_coverage(conn, filter);
     }
 
@@ -952,6 +953,189 @@ fn validate_pricing_coverage(conn: &Connection, filter: &QueryFilter) -> Result<
     }
 
     Ok(())
+}
+
+fn validate_billing_component_integrity(conn: &Connection, filter: &QueryFilter) -> Result<()> {
+    validate_no_orphan_billing_components(conn)?;
+    validate_no_duplicate_billing_components(conn)?;
+    validate_filtered_usage_component_totals(conn, filter)?;
+    validate_filtered_extra_billing_components(conn, filter)?;
+    Ok(())
+}
+
+fn validate_no_orphan_billing_components(conn: &Connection) -> Result<()> {
+    let orphan = conn.query_row(
+        "SELECT c.provider, c.request_id, c.model_id, c.token_category
+         FROM usage_billing_components c
+         LEFT JOIN token_usage u
+           ON u.provider = c.provider
+          AND u.request_id = c.request_id
+         WHERE u.id IS NULL
+         ORDER BY c.provider, c.request_id, c.component_ordinal
+         LIMIT 1",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        },
+    );
+    match orphan {
+        Ok((provider, request_id, model_id, category)) => bail!(
+            "billing component integrity error for provider={provider}, request_id={request_id}, model={model_id}, category={category}: usage_billing_components row has no matching token_usage row; reingest or repair usage_billing_components"
+        ),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn validate_no_duplicate_billing_components(conn: &Connection) -> Result<()> {
+    let duplicate = conn.query_row(
+        "SELECT provider, request_id, model_id, token_category, COUNT(*)
+         FROM usage_billing_components
+         GROUP BY provider, request_id, token_category,
+                  COALESCE(service_tier, ''), COALESCE(speed, ''), COALESCE(region, ''),
+                  COALESCE(processing_mode, ''), COALESCE(source_detail, '')
+         HAVING COUNT(*) > 1
+         ORDER BY provider, request_id, token_category
+         LIMIT 1",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        },
+    );
+    match duplicate {
+        Ok((provider, request_id, model_id, category, count)) => bail!(
+            "billing component integrity error for provider={provider}, request_id={request_id}, model={model_id}, category={category}: found {count} duplicate usage_billing_components rows for the same pricing dimensions; reingest or repair usage_billing_components"
+        ),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn validate_filtered_usage_component_totals(conn: &Connection, filter: &QueryFilter) -> Result<()> {
+    let (where_clause, params) = build_where_clause(filter);
+    let expected_sql = expected_component_union_sql();
+    let sql = format!(
+        "WITH filtered_usage AS (
+             SELECT *
+             FROM token_usage
+             WHERE 1=1 {where_clause}
+         ),
+         expected AS ({expected_sql}),
+         actual AS (
+             SELECT c.provider, c.request_id, c.token_category, SUM(c.tokens) AS actual_tokens
+             FROM filtered_usage token_usage
+             JOIN usage_billing_components c
+               ON c.provider = token_usage.provider
+              AND c.request_id = token_usage.request_id
+             GROUP BY c.provider, c.request_id, c.token_category
+         )
+         SELECT e.provider, e.request_id, e.model_id, e.token_category, e.expected_tokens,
+                COALESCE(a.actual_tokens, 0)
+         FROM expected e
+         LEFT JOIN actual a
+           ON a.provider = e.provider
+          AND a.request_id = e.request_id
+          AND a.token_category = e.token_category
+         WHERE e.expected_tokens > 0
+           AND COALESCE(a.actual_tokens, 0) != e.expected_tokens
+         ORDER BY e.provider, e.request_id, e.token_category
+         LIMIT 1"
+    );
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mismatch = conn.query_row(&sql, param_refs.as_slice(), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+        ))
+    });
+    match mismatch {
+        Ok((provider, request_id, model_id, category, expected, actual)) => bail!(
+            "billing component integrity error for provider={provider}, request_id={request_id}, model={model_id}, category={category}: expected {expected} billable tokens from token_usage but found {actual} in usage_billing_components; reingest or repair usage_billing_components"
+        ),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn validate_filtered_extra_billing_components(
+    conn: &Connection,
+    filter: &QueryFilter,
+) -> Result<()> {
+    let (where_clause, params) = build_where_clause(filter);
+    let expected_sql = expected_component_union_sql();
+    let sql = format!(
+        "WITH filtered_usage AS (
+             SELECT *
+             FROM token_usage
+             WHERE 1=1 {where_clause}
+         ),
+         expected AS ({expected_sql}),
+         actual AS (
+             SELECT c.provider, c.request_id, c.model_id, c.token_category, SUM(c.tokens) AS actual_tokens
+             FROM filtered_usage token_usage
+             JOIN usage_billing_components c
+               ON c.provider = token_usage.provider
+              AND c.request_id = token_usage.request_id
+             GROUP BY c.provider, c.request_id, c.model_id, c.token_category
+         )
+         SELECT a.provider, a.request_id, a.model_id, a.token_category, a.actual_tokens
+         FROM actual a
+         LEFT JOIN expected e
+           ON e.provider = a.provider
+          AND e.request_id = a.request_id
+          AND e.token_category = a.token_category
+          AND e.expected_tokens > 0
+         WHERE e.request_id IS NULL
+         ORDER BY a.provider, a.request_id, a.token_category
+         LIMIT 1"
+    );
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let extra = conn.query_row(&sql, param_refs.as_slice(), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?,
+        ))
+    });
+    match extra {
+        Ok((provider, request_id, model_id, category, actual)) => bail!(
+            "billing component integrity error for provider={provider}, request_id={request_id}, model={model_id}, category={category}: found {actual} unexpected billable tokens in usage_billing_components; reingest or repair usage_billing_components"
+        ),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn expected_component_union_sql() -> String {
+    TokenCategory::ALL
+        .into_iter()
+        .map(|category| {
+            format!(
+                "SELECT provider, request_id, model_id, '{}' AS token_category, {} AS expected_tokens
+                 FROM filtered_usage token_usage",
+                category.as_str(),
+                billable_tokens_sql(category)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ")
 }
 
 fn validate_component_pricing_coverage(conn: &Connection, filter: &QueryFilter) -> Result<()> {
@@ -2457,6 +2641,93 @@ mod tests {
         assert!(err.contains("missing pricing coverage"));
         assert!(err.contains("claude-opus-4-6"));
         assert!(err.contains("tkstat --pricing-refresh"));
+    }
+
+    #[test]
+    fn test_cost_query_fails_when_billable_usage_has_no_components() {
+        let db = Database::open_in_memory().unwrap();
+        seed_db(&db);
+        db.conn()
+            .execute(
+                "DELETE FROM usage_billing_components
+                 WHERE provider = 'claude-code' AND request_id = 'r1'",
+                [],
+            )
+            .unwrap();
+        let filter = QueryFilter {
+            include_subagents: true,
+            ..Default::default()
+        };
+
+        let err = query_summary(db.conn(), &filter).unwrap_err().to_string();
+        assert!(err.contains("billing component integrity error"));
+        assert!(err.contains("request_id=r1"));
+        assert!(err.contains("expected 100 billable tokens"));
+        assert!(err.contains("found 0"));
+
+        let token_only =
+            query_by_period_with_cost_requirement(db.conn(), TimePeriod::Daily, &filter, 30, false)
+                .unwrap();
+        assert!(!token_only.is_empty());
+    }
+
+    #[test]
+    fn test_cost_query_fails_when_billable_usage_has_partial_components() {
+        let db = Database::open_in_memory().unwrap();
+        seed_db(&db);
+        db.conn()
+            .execute(
+                "DELETE FROM usage_billing_components
+                 WHERE provider = 'claude-code'
+                   AND request_id = 'r1'
+                   AND token_category = 'output'",
+                [],
+            )
+            .unwrap();
+
+        let err = query_summary(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("billing component integrity error"));
+        assert!(err.contains("request_id=r1"));
+        assert!(err.contains("category=output"));
+        assert!(err.contains("expected 50 billable tokens"));
+        assert!(err.contains("found 0"));
+    }
+
+    #[test]
+    fn test_cost_query_fails_when_billing_component_is_orphaned() {
+        let db = Database::open_in_memory().unwrap();
+        seed_db(&db);
+        db.conn()
+            .execute(
+                "INSERT INTO usage_billing_components
+                 (usage_id, provider, request_id, model_id, timestamp, token_category, tokens,
+                  component_ordinal)
+                 VALUES (9999, 'claude-code', 'missing-request', 'claude-opus-4-6',
+                         '2026-04-05T10:00:00+00:00', 'input', 10, 999)",
+                [],
+            )
+            .unwrap();
+
+        let err = query_summary(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("billing component integrity error"));
+        assert!(err.contains("request_id=missing-request"));
+        assert!(err.contains("no matching token_usage row"));
     }
 
     #[test]
