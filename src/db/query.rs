@@ -9,6 +9,7 @@ use crate::domain::pricing::{
     BillableTokenExpression, TokenCategory, TokenCountField, billable_token_categories_for_counts,
     billable_token_rule, default_billing_rules, provider_billing_policies,
 };
+use crate::domain::provider::ProviderId;
 use crate::domain::usage::{AggregatedRow, ModelFamily};
 
 /// Filter parameters for queries.
@@ -16,7 +17,7 @@ use crate::domain::usage::{AggregatedRow, ModelFamily};
 pub struct QueryFilter {
     pub begin: Option<NaiveDate>,
     pub end: Option<NaiveDate>,
-    pub provider: Option<String>,
+    pub provider: Option<ProviderId>,
     pub model: Option<String>,
     pub model_family: Option<String>,
     pub project: Option<String>,
@@ -478,7 +479,7 @@ fn billable_tokens_sql(category: TokenCategory) -> String {
         if policy_expr != default_expr {
             sql = format!(
                 "(CASE WHEN token_usage.provider = '{}' THEN {} ELSE {} END)",
-                policy.provider,
+                policy.provider.as_str(),
                 token_expression_sql(policy_expr),
                 sql
             );
@@ -559,11 +560,13 @@ fn validate_pricing_coverage(conn: &Connection, filter: &QueryFilter) -> Result<
 
     while let Some(row) = rows.next()? {
         let provider: String = row.get(0)?;
+        let provider_id = ProviderId::from_canonical(&provider)
+            .ok_or_else(|| anyhow::anyhow!("unknown provider id in usage row: {provider}"))?;
         let model_id: String = row.get(1)?;
         let timestamp: String = row.get(2)?;
         let timestamp: DateTime<Utc> = timestamp.parse()?;
         let categories = billable_token_categories_for_counts(
-            &provider,
+            provider_id,
             row.get::<_, i64>(3)?.max(0) as u64,
             row.get::<_, i64>(4)?.max(0) as u64,
             row.get::<_, i64>(5)?.max(0) as u64,
@@ -815,7 +818,7 @@ fn build_where_clause(filter: &QueryFilter) -> (String, Vec<Box<dyn rusqlite::ty
     }
 
     if let Some(ref provider) = filter.provider {
-        params.push(Box::new(provider.clone()));
+        params.push(Box::new(provider.as_str().to_string()));
         clauses.push(format!("AND provider = ?{}", params.len()));
     }
 
@@ -888,7 +891,7 @@ mod tests {
         output: u64,
     ) -> crate::domain::usage::TokenRecord {
         crate::domain::usage::TokenRecord {
-            provider: "claude-code".into(),
+            provider: crate::domain::provider::ProviderId::ClaudeCode,
             request_id: id.into(),
             session_id: format!("s-{id}"),
             uuid: format!("u-{id}"),
@@ -927,7 +930,7 @@ mod tests {
         to: Option<&str>,
     ) -> PricingInterval {
         let mut interval = PricingInterval::usd(
-            provider,
+            crate::domain::provider::ProviderId::from_canonical(provider).unwrap(),
             model_id,
             category,
             rate,
@@ -1009,7 +1012,7 @@ mod tests {
             700,
             80,
         );
-        codex.provider = "codex".into();
+        codex.provider = crate::domain::provider::ProviderId::Codex;
         codex.model_id = "gpt-5.1-codex".into();
         db.insert_records(&[codex]).unwrap();
 
@@ -1049,7 +1052,7 @@ mod tests {
             200,
             60,
         );
-        codex.provider = "codex".into();
+        codex.provider = crate::domain::provider::ProviderId::Codex;
         codex.model_id = "gpt-5.5".into();
         codex.session_id = "shared-session".into();
         db.insert_records(&[claude, codex]).unwrap();
@@ -1057,7 +1060,7 @@ mod tests {
         let codex_summary = query_summary(
             db.conn(),
             &QueryFilter {
-                provider: Some("codex".into()),
+                provider: Some(crate::domain::provider::ProviderId::Codex),
                 include_subagents: true,
                 ..Default::default()
             },
@@ -1100,7 +1103,7 @@ mod tests {
             200,
             60,
         );
-        codex.provider = "codex".into();
+        codex.provider = crate::domain::provider::ProviderId::Codex;
         codex.model_id = "gpt-5.5".into();
         codex.session_id = "shared-session".into();
         db.insert_records(&[claude, codex]).unwrap();
@@ -1127,7 +1130,7 @@ mod tests {
         let filtered = query_by_provider(
             db.conn(),
             &QueryFilter {
-                provider: Some("codex".into()),
+                provider: Some(crate::domain::provider::ProviderId::Codex),
                 include_subagents: true,
                 ..Default::default()
             },
@@ -1170,7 +1173,7 @@ mod tests {
             25,
             5,
         );
-        unknown.provider = "codex".into();
+        unknown.provider = crate::domain::provider::ProviderId::Codex;
         unknown.model_id = "gpt-5.5".into();
         db.insert_records(&[unknown]).unwrap();
 
@@ -1203,7 +1206,7 @@ mod tests {
         let rows = query_by_project(
             db.conn(),
             &QueryFilter {
-                provider: Some("claude-code".into()),
+                provider: Some(crate::domain::provider::ProviderId::ClaudeCode),
                 project: Some("proj-b".into()),
                 model: Some("opus".into()),
                 include_subagents: true,
@@ -1631,7 +1634,7 @@ mod tests {
             100,
             20,
         );
-        record.provider = "codex".into();
+        record.provider = crate::domain::provider::ProviderId::Codex;
         record.model = ModelFamily::Unknown;
         record.model_id = "gpt-audit".into();
         record.cached_input_tokens = 40;
@@ -1642,7 +1645,7 @@ mod tests {
         let summary = query_summary(
             db.conn(),
             &QueryFilter {
-                provider: Some("codex".into()),
+                provider: Some(crate::domain::provider::ProviderId::Codex),
                 include_subagents: true,
                 ..Default::default()
             },
@@ -1716,7 +1719,7 @@ mod tests {
             100,
             20,
         );
-        codex_cached.provider = "codex".into();
+        codex_cached.provider = crate::domain::provider::ProviderId::Codex;
         codex_cached.model = ModelFamily::Unknown;
         codex_cached.model_id = "gpt-policy".into();
         codex_cached.cached_input_tokens = 40;
@@ -1730,7 +1733,7 @@ mod tests {
             30,
             10,
         );
-        codex_overcached.provider = "codex".into();
+        codex_overcached.provider = crate::domain::provider::ProviderId::Codex;
         codex_overcached.model = ModelFamily::Unknown;
         codex_overcached.model_id = "gpt-policy".into();
         codex_overcached.cached_input_tokens = 40;
@@ -1744,7 +1747,7 @@ mod tests {
             25,
             5,
         );
-        codex_uncached.provider = "codex".into();
+        codex_uncached.provider = crate::domain::provider::ProviderId::Codex;
         codex_uncached.model = ModelFamily::Unknown;
         codex_uncached.model_id = "gpt-policy".into();
 

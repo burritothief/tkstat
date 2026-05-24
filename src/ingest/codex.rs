@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use walkdir::WalkDir;
 
+use crate::domain::provider::ProviderId;
 use crate::domain::usage::{ModelFamily, TokenRecord};
 use crate::ingest::ParsedFile;
 use crate::ingest::walker::SourceFile;
@@ -227,7 +228,7 @@ fn token_count_record(
         .unwrap_or_else(|| file_info.project_name.clone());
 
     Some(TokenRecord {
-        provider: CODEX_PROVIDER.into(),
+        provider: ProviderId::Codex,
         request_id: request_id.clone(),
         session_id,
         uuid: request_id,

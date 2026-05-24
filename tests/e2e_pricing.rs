@@ -4,6 +4,13 @@ mod support;
 use support::*;
 
 #[test]
+fn test_stderr_field_value_matches_provider_exactly() {
+    let stderr = "missing pricing coverage for provider=claude-code, model=m, category=input, usage range a to b";
+    assert_eq!(stderr_field_value(stderr, "provider"), Some("claude-code"));
+    assert_ne!(stderr_field_value(stderr, "provider"), Some("claude"));
+}
+
+#[test]
 fn test_pricing_failure_without_seed_then_seed_remediates_json_report() {
     let root = temp_root("pricing-failure-remediation-json");
     let projects = make_claude_corpus_fixture(&root);
@@ -110,7 +117,7 @@ fn test_incomplete_seeded_pricing_failure_then_reseed_repairs_csv_report() {
     let missing = run_tkstat(&root, report_args);
     assert_missing_pricing_remediation(
         &missing,
-        "claude",
+        "claude-code",
         "claude-opus-4-5-20251101",
         Some("cache_creation"),
     );
@@ -224,7 +231,7 @@ fn test_token_only_reports_do_not_require_pricing_but_cost_reports_do() {
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("missing pricing coverage"));
-        assert!(stderr.contains("provider=claude-code"));
+        assert_eq!(stderr_field_value(&stderr, "provider"), Some("claude-code"));
         assert!(stderr.contains("tkstat --pricing-seed"));
     }
 

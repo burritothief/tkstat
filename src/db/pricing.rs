@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use crate::domain::pricing::{
     PricingInterval, TokenCategory, billable_token_categories_for_counts, nonzero_token_categories,
 };
-use crate::domain::provider::{CLAUDE_CODE_PROVIDER, CODEX_PROVIDER};
+use crate::domain::provider::ProviderId;
 use crate::domain::usage::TokenRecord;
 
 pub trait PricingFetcher {
@@ -108,7 +108,7 @@ pub fn insert_interval(conn: &Connection, interval: &PricingInterval) -> Result<
             (provider, model_id, token_category, currency, rate_per_1m_tokens, effective_from, effective_to, source)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
-            interval.provider,
+            interval.provider.as_str(),
             interval.model_id,
             interval.token_category.as_str(),
             interval.currency,
@@ -128,7 +128,7 @@ pub fn insert_interval_if_missing(conn: &Connection, interval: &PricingInterval)
             (provider, model_id, token_category, currency, rate_per_1m_tokens, effective_from, effective_to, source)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
-            interval.provider,
+            interval.provider.as_str(),
             interval.model_id,
             interval.token_category.as_str(),
             interval.currency,
@@ -176,7 +176,7 @@ pub fn refresh_pricing(conn: &Connection, fetcher: &dyn PricingFetcher) -> Resul
 fn upsert_current_interval(conn: &Connection, interval: &PricingInterval) -> Result<usize> {
     let existing = open_interval(
         conn,
-        &interval.provider,
+        interval.provider,
         &interval.model_id,
         interval.token_category,
     )?;
@@ -209,7 +209,7 @@ fn upsert_current_interval(conn: &Connection, interval: &PricingInterval) -> Res
                    AND effective_from = ?6",
                 rusqlite::params![
                     interval.effective_from.to_rfc3339(),
-                    existing.provider,
+                    existing.provider.as_str(),
                     existing.model_id,
                     existing.token_category.as_str(),
                     existing.currency,
@@ -225,7 +225,7 @@ fn upsert_current_interval(conn: &Connection, interval: &PricingInterval) -> Res
 
 fn open_interval(
     conn: &Connection,
-    provider: &str,
+    provider: ProviderId,
     model_id: &str,
     token_category: TokenCategory,
 ) -> Result<Option<PricingInterval>> {
@@ -241,7 +241,7 @@ fn open_interval(
     )?;
     let rows = stmt
         .query_map(
-            rusqlite::params![provider, model_id, token_category.as_str()],
+            rusqlite::params![provider.as_str(), model_id, token_category.as_str()],
             row_to_interval,
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -257,7 +257,7 @@ fn open_interval(
 
 pub fn applicable_interval(
     conn: &Connection,
-    provider: &str,
+    provider: ProviderId,
     model_id: &str,
     token_category: TokenCategory,
     timestamp: DateTime<Utc>,
@@ -277,7 +277,7 @@ pub fn applicable_interval(
     let rows = stmt
         .query_map(
             rusqlite::params![
-                provider,
+                provider.as_str(),
                 model_id,
                 token_category.as_str(),
                 timestamp.to_rfc3339(),
@@ -304,7 +304,7 @@ pub fn calculate_record_cost(conn: &Connection, record: &TokenRecord) -> Result<
     for (category, tokens) in nonzero_token_categories(record) {
         let interval = applicable_interval(
             conn,
-            &record.provider,
+            record.provider,
             &record.model_id,
             category,
             record.timestamp,
@@ -358,7 +358,7 @@ fn audit_catalog(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
                 PricingAuditSeverity::Error,
                 PricingAuditKind::UnsupportedCurrency,
                 audit_key(
-                    &interval.provider,
+                    interval.provider.as_str(),
                     &interval.model_id,
                     interval.token_category,
                 ),
@@ -369,7 +369,7 @@ fn audit_catalog(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
         }
         by_key
             .entry((
-                interval.provider.clone(),
+                interval.provider.as_str().to_string(),
                 interval.model_id.clone(),
                 interval.token_category,
                 interval.currency.clone(),
@@ -452,11 +452,13 @@ fn audit_usage_coverage(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
 
     while let Some(row) = rows.next()? {
         let provider: String = row.get(0)?;
+        let provider_id = ProviderId::from_canonical(&provider)
+            .ok_or_else(|| anyhow!("unknown provider id in usage row: {provider}"))?;
         let model_id: String = row.get(1)?;
         let timestamp: String = row.get(2)?;
         let timestamp: DateTime<Utc> = timestamp.parse()?;
         let categories = billable_token_categories_for_counts(
-            &provider,
+            provider_id,
             row.get::<_, i64>(3)?.max(0) as u64,
             row.get::<_, i64>(4)?.max(0) as u64,
             row.get::<_, i64>(5)?.max(0) as u64,
@@ -662,6 +664,12 @@ fn raw_catalog_findings(raw: &RawPricingInterval) -> Vec<PricingAuditFinding> {
     if raw.rate_per_1m_tokens.is_none() {
         findings.push(malformed_finding(raw, "store a numeric non-negative rate"));
     }
+    if ProviderId::from_canonical(raw.provider.as_str()).is_none() {
+        findings.push(malformed_finding(
+            raw,
+            "use a supported canonical provider id such as claude-code or codex",
+        ));
+    }
     if let Some(rate) = raw.rate_per_1m_tokens
         && rate < 0.0
     {
@@ -728,6 +736,7 @@ fn raw_to_valid_interval(raw: &RawPricingInterval) -> Option<PricingInterval> {
     if rate < 0.0 {
         return None;
     }
+    let provider = ProviderId::from_canonical(raw.provider.as_str())?;
     let token_category = raw.token_category.parse().ok()?;
     let effective_from = raw.effective_from.parse().ok()?;
     let effective_to = raw
@@ -742,7 +751,7 @@ fn raw_to_valid_interval(raw: &RawPricingInterval) -> Option<PricingInterval> {
         return None;
     }
     Some(PricingInterval {
-        provider: raw.provider.clone(),
+        provider,
         model_id: raw.model_id.clone(),
         token_category,
         currency: raw.currency.clone(),
@@ -796,11 +805,18 @@ fn numeric_cell(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<Option<
 }
 
 fn row_to_interval(row: &rusqlite::Row<'_>) -> rusqlite::Result<PricingInterval> {
+    let provider: String = row.get(0)?;
     let token_category: String = row.get(2)?;
     let effective_from: String = row.get(5)?;
     let effective_to: Option<String> = row.get(6)?;
     Ok(PricingInterval {
-        provider: row.get(0)?,
+        provider: ProviderId::from_canonical(&provider).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("unknown provider id '{provider}'").into(),
+            )
+        })?,
         model_id: row.get(1)?,
         token_category: token_category.parse().map_err(|e: String| {
             rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, e.into())
@@ -932,7 +948,7 @@ fn add_anthropic_model(
         (TokenCategory::CacheRead, input * 0.10),
     ] {
         intervals.push(PricingInterval::usd(
-            CLAUDE_CODE_PROVIDER,
+            ProviderId::ClaudeCode,
             model_id,
             category,
             rate,
@@ -958,7 +974,7 @@ fn add_openai_model(
         (TokenCategory::ReasoningOutput, output),
     ] {
         intervals.push(PricingInterval::usd(
-            CODEX_PROVIDER,
+            ProviderId::Codex,
             model_id,
             category,
             rate,
@@ -991,7 +1007,7 @@ mod tests {
         to: Option<&str>,
     ) -> PricingInterval {
         let mut interval = PricingInterval::usd(
-            CLAUDE_CODE_PROVIDER,
+            ProviderId::ClaudeCode,
             "claude-opus-4-6",
             category,
             rate,
@@ -1004,7 +1020,7 @@ mod tests {
 
     fn record(model_id: &str) -> TokenRecord {
         TokenRecord {
-            provider: "claude-code".into(),
+            provider: crate::domain::provider::ProviderId::ClaudeCode,
             request_id: "r1".into(),
             session_id: "s1".into(),
             uuid: "u1".into(),
@@ -1058,7 +1074,7 @@ mod tests {
 
         let selected = applicable_interval(
             db.conn(),
-            CLAUDE_CODE_PROVIDER,
+            ProviderId::ClaudeCode,
             "claude-opus-4-6",
             TokenCategory::Input,
             "2026-04-07T10:00:00Z".parse().unwrap(),
@@ -1088,7 +1104,7 @@ mod tests {
 
         let selected = applicable_interval(
             db.conn(),
-            CLAUDE_CODE_PROVIDER,
+            ProviderId::ClaudeCode,
             "claude-opus-4-6",
             TokenCategory::Input,
             "2026-04-07T10:00:00Z".parse().unwrap(),
@@ -1145,7 +1161,7 @@ mod tests {
 
         let err = applicable_interval(
             db.conn(),
-            CLAUDE_CODE_PROVIDER,
+            ProviderId::ClaudeCode,
             "claude-opus-4-6",
             TokenCategory::Input,
             "2026-04-07T10:00:00Z".parse().unwrap(),
@@ -1185,7 +1201,7 @@ mod tests {
             insert_interval(
                 db.conn(),
                 &PricingInterval::usd(
-                    "codex",
+                    ProviderId::Codex,
                     "gpt-audit",
                     category,
                     rate,
@@ -1197,7 +1213,7 @@ mod tests {
         }
 
         let mut usage = record("gpt-audit");
-        usage.provider = "codex".into();
+        usage.provider = crate::domain::provider::ProviderId::Codex;
         usage.model = ModelFamily::Unknown;
         usage.input_tokens = 100;
         usage.cached_input_tokens = 40;
@@ -1236,7 +1252,7 @@ mod tests {
 
         let selected = applicable_interval(
             db.conn(),
-            "codex",
+            ProviderId::Codex,
             "gpt-5.4",
             TokenCategory::CachedInput,
             "2026-05-24T00:00:00Z".parse().unwrap(),
@@ -1279,7 +1295,7 @@ mod tests {
         ] {
             let selected = applicable_interval(
                 db.conn(),
-                CLAUDE_CODE_PROVIDER,
+                ProviderId::ClaudeCode,
                 "claude-opus-4-5-20251101",
                 category,
                 "2026-01-31T21:20:19.858Z".parse().unwrap(),
@@ -1378,7 +1394,7 @@ mod tests {
             .execute(
                 "INSERT INTO pricing_intervals
                  (provider, model_id, token_category, currency, rate_per_1m_tokens, effective_from, effective_to, source)
-                 VALUES ('claude', 'claude-opus-4-6', 'input', 'EUR', 1.0, '2026-01-01T00:00:00Z', NULL, 'test')",
+                 VALUES ('claude-code', 'claude-opus-4-6', 'input', 'EUR', 1.0, '2026-01-01T00:00:00Z', NULL, 'test')",
                 [],
             )
             .unwrap();
@@ -1398,7 +1414,7 @@ mod tests {
             .unwrap();
         insert_raw_pricing_row(
             db.conn(),
-            CLAUDE_CODE_PROVIDER,
+            ProviderId::ClaudeCode.as_str(),
             "claude-opus-4-6",
             "mystery",
             1.0,
@@ -1407,7 +1423,7 @@ mod tests {
         );
         insert_raw_pricing_row(
             db.conn(),
-            CLAUDE_CODE_PROVIDER,
+            ProviderId::ClaudeCode.as_str(),
             "claude-opus-4-7",
             "input",
             1.0,
@@ -1416,7 +1432,7 @@ mod tests {
         );
         insert_raw_pricing_row(
             db.conn(),
-            CLAUDE_CODE_PROVIDER,
+            ProviderId::ClaudeCode.as_str(),
             "claude-opus-4-8",
             "input",
             -1.0,
@@ -1434,7 +1450,16 @@ mod tests {
         );
         insert_raw_pricing_row(
             db.conn(),
-            CLAUDE_CODE_PROVIDER,
+            "claude",
+            "claude-opus-4-alias",
+            "input",
+            1.0,
+            "2026-01-01T00:00:00Z",
+            "test",
+        );
+        insert_raw_pricing_row(
+            db.conn(),
+            ProviderId::ClaudeCode.as_str(),
             "",
             "input",
             1.0,
@@ -1443,7 +1468,7 @@ mod tests {
         );
         insert_raw_pricing_row(
             db.conn(),
-            CLAUDE_CODE_PROVIDER,
+            ProviderId::ClaudeCode.as_str(),
             "claude-opus-4-10",
             "input",
             1.0,
@@ -1454,7 +1479,7 @@ mod tests {
         let findings = audit_pricing(db.conn()).unwrap();
         for (provider, model_id, category, remediation) in [
             (
-                CLAUDE_CODE_PROVIDER,
+                "claude-code",
                 "claude-opus-4-6",
                 "mystery",
                 "supported token category",
@@ -1467,6 +1492,12 @@ mod tests {
                 "non-negative rate",
             ),
             ("", "claude-opus-4-9", "input", "non-empty provider"),
+            (
+                "claude",
+                "claude-opus-4-alias",
+                "input",
+                "canonical provider id",
+            ),
             ("claude-code", "", "input", "non-empty model id"),
             (
                 "claude-code",
@@ -1492,7 +1523,7 @@ mod tests {
     fn test_pricing_audit_detects_missing_cached_token_pricing_for_usage() {
         let db = Database::open_in_memory().unwrap();
         let mut usage = record("gpt-audit");
-        usage.provider = "codex".into();
+        usage.provider = crate::domain::provider::ProviderId::Codex;
         usage.model = ModelFamily::Unknown;
         usage.input_tokens = 0;
         usage.output_tokens = 0;
@@ -1514,7 +1545,7 @@ mod tests {
         insert_interval(
             db.conn(),
             &PricingInterval::usd(
-                "codex",
+                ProviderId::Codex,
                 "gpt-audit",
                 TokenCategory::Output,
                 100.0,
@@ -1524,7 +1555,7 @@ mod tests {
         )
         .unwrap();
         let mut usage = record("gpt-audit");
-        usage.provider = "codex".into();
+        usage.provider = crate::domain::provider::ProviderId::Codex;
         usage.model = ModelFamily::Unknown;
         usage.input_tokens = 0;
         usage.output_tokens = 20;
@@ -1598,7 +1629,7 @@ mod tests {
 
         let selected = applicable_interval(
             db.conn(),
-            CLAUDE_CODE_PROVIDER,
+            ProviderId::ClaudeCode,
             "claude-opus-4-6",
             TokenCategory::Input,
             "2026-04-07T10:00:00Z".parse().unwrap(),
@@ -1680,7 +1711,7 @@ mod tests {
         assert!(refresh_pricing(db.conn(), &FailingFetcher).is_err());
         let selected = applicable_interval(
             db.conn(),
-            CLAUDE_CODE_PROVIDER,
+            ProviderId::ClaudeCode,
             "claude-opus-4-6",
             TokenCategory::Input,
             "2026-04-07T10:00:00Z".parse().unwrap(),

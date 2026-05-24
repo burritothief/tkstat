@@ -49,7 +49,7 @@ fn test_primary_report_output_modes_e2e() {
     let by_provider = run_tkstat(&root, base.into_iter().chain(["--by-provider"]));
     assert_success(&by_provider);
     let by_provider_stdout = String::from_utf8_lossy(&by_provider.stdout);
-    assert!(by_provider_stdout.contains("claude"));
+    assert!(by_provider_stdout.contains("claude-code"));
     assert!(by_provider_stdout.contains("codex"));
 
     let by_project = run_tkstat(&root, base.into_iter().chain(["--by-project"]));

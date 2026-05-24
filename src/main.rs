@@ -112,7 +112,7 @@ fn main() -> Result<()> {
     let provider_label = cli.provider_label();
     let filter = cli.query_filter();
     let filter_desc = render::filter_description(
-        filter.provider.as_deref(),
+        filter.provider.map(|provider| provider.as_str()),
         cli.model.as_deref(),
         cli.model_family.as_deref(),
         cli.project.as_deref(),
@@ -519,6 +519,7 @@ fn budget_report_row(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use tkstat::domain::provider::ProviderId;
 
     #[test]
     fn test_with_provider_label_adds_provider_to_period_rows() {
@@ -549,7 +550,7 @@ mod tests {
         let db = db::Database::open_in_memory().unwrap();
         let report = ingest::IngestReport {
             providers: vec![ingest::ProviderIngestReport {
-                provider: "claude-code",
+                provider: ProviderId::ClaudeCode,
                 path: Some(PathBuf::from("/missing")),
                 status: ingest::ProviderIngestStatus::Missing,
                 discovered_files: 0,

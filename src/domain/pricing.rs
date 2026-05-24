@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::domain::provider::CODEX_PROVIDER;
+use crate::domain::provider::ProviderId;
 use crate::domain::usage::TokenRecord;
 
 /// Normalized token categories used for pricing.
@@ -61,7 +61,7 @@ pub struct BillableTokenRule {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderBillingPolicy {
-    pub provider: &'static str,
+    pub provider: ProviderId,
     pub rules: &'static [BillableTokenRule],
 }
 
@@ -133,7 +133,7 @@ const OPENAI_BILLING_RULES: [BillableTokenRule; 6] = [
 ];
 
 const PROVIDER_BILLING_POLICIES: [ProviderBillingPolicy; 1] = [ProviderBillingPolicy {
-    provider: CODEX_PROVIDER,
+    provider: ProviderId::Codex,
     rules: &OPENAI_BILLING_RULES,
 }];
 
@@ -162,7 +162,7 @@ impl std::str::FromStr for TokenCategory {
 /// Effective-dated price for one provider/model/category.
 #[derive(Debug, Clone)]
 pub struct PricingInterval {
-    pub provider: String,
+    pub provider: ProviderId,
     pub model_id: String,
     pub token_category: TokenCategory,
     pub currency: String,
@@ -174,7 +174,7 @@ pub struct PricingInterval {
 
 impl PricingInterval {
     pub fn usd(
-        provider: impl Into<String>,
+        provider: ProviderId,
         model_id: impl Into<String>,
         token_category: TokenCategory,
         rate_per_1m_tokens: f64,
@@ -182,7 +182,7 @@ impl PricingInterval {
         source: impl Into<String>,
     ) -> Self {
         Self {
-            provider: provider.into(),
+            provider,
             model_id: model_id.into(),
             token_category,
             currency: "USD".into(),
@@ -199,11 +199,11 @@ impl PricingInterval {
 }
 
 pub fn nonzero_token_categories(record: &TokenRecord) -> Vec<(TokenCategory, u64)> {
-    billable_token_categories(&record.provider, TokenCounts::from(record))
+    billable_token_categories(record.provider, TokenCounts::from(record))
 }
 
 pub fn billable_token_categories_for_counts(
-    provider: &str,
+    provider: ProviderId,
     input_tokens: u64,
     output_tokens: u64,
     cache_read_tokens: u64,
@@ -224,7 +224,10 @@ pub fn billable_token_categories_for_counts(
     )
 }
 
-pub fn billable_token_categories(provider: &str, counts: TokenCounts) -> Vec<(TokenCategory, u64)> {
+pub fn billable_token_categories(
+    provider: ProviderId,
+    counts: TokenCounts,
+) -> Vec<(TokenCategory, u64)> {
     billable_token_rules(provider)
         .iter()
         .filter_map(|rule| {
@@ -242,7 +245,7 @@ pub fn provider_billing_policies() -> &'static [ProviderBillingPolicy] {
     &PROVIDER_BILLING_POLICIES
 }
 
-pub fn billable_token_rules(provider: &str) -> &'static [BillableTokenRule] {
+pub fn billable_token_rules(provider: ProviderId) -> &'static [BillableTokenRule] {
     provider_billing_policies()
         .iter()
         .find(|policy| policy.provider == provider)
@@ -301,7 +304,7 @@ impl From<&TokenRecord> for TokenCounts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::provider::CLAUDE_CODE_PROVIDER;
+    use crate::domain::provider::ProviderId;
     use crate::domain::usage::{ModelFamily, TokenRecord};
 
     #[test]
@@ -325,7 +328,7 @@ mod tests {
     #[test]
     fn test_pricing_interval_cost_for_tokens() {
         let interval = PricingInterval::usd(
-            CLAUDE_CODE_PROVIDER,
+            ProviderId::ClaudeCode,
             "claude-opus-4-6",
             TokenCategory::Input,
             15.0,
@@ -338,7 +341,7 @@ mod tests {
     #[test]
     fn test_nonzero_token_categories_uses_non_overlapping_codex_billing() {
         let record = TokenRecord {
-            provider: "codex".into(),
+            provider: crate::domain::provider::ProviderId::Codex,
             request_id: "r1".into(),
             session_id: "s1".into(),
             uuid: "u1".into(),

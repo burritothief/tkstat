@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::fmt;
 
+use crate::domain::provider::ProviderId;
+
 /// Normalized model family for grouping and pricing lookup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModelFamily {
@@ -57,7 +59,7 @@ impl std::str::FromStr for ModelFamily {
 /// A single deduplicated API request's token usage.
 #[derive(Debug, Clone)]
 pub struct TokenRecord {
-    pub provider: String,
+    pub provider: ProviderId,
     pub request_id: String,
     pub session_id: String,
     pub uuid: String,

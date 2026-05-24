@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
+use crate::domain::provider::ProviderId;
 use crate::domain::usage::{ModelFamily, TokenRecord};
 use crate::ingest::ParsedFile;
 use crate::ingest::walker::SourceFile;
@@ -152,7 +153,7 @@ fn parse_jsonl_lines_with_errors<'a>(
         };
 
         let record = TokenRecord {
-            provider: CLAUDE_PROVIDER.into(),
+            provider: ProviderId::ClaudeCode,
             request_id: request_id.clone(),
             session_id: entry.session_id.unwrap_or_default(),
             uuid: entry.uuid.unwrap_or_default(),

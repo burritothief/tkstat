@@ -378,7 +378,7 @@ mod tests {
 
     fn record(provider: &str, request_id: &str, model_id: &str) -> TokenRecord {
         TokenRecord {
-            provider: provider.into(),
+            provider: crate::domain::provider::ProviderId::parse(provider).unwrap(),
             request_id: request_id.into(),
             session_id: format!("s-{request_id}"),
             uuid: format!("u-{request_id}"),
@@ -428,7 +428,14 @@ mod tests {
         db.seed_pricing().unwrap();
         db.insert_records(&[record("claude-code", "req-1", "claude-sonnet-4-5-20250929")])
             .unwrap();
-        db.update_file_state("claude-code", &path, 3, 1, 3).unwrap();
+        db.update_file_state(
+            crate::domain::provider::ProviderId::ClaudeCode,
+            &path,
+            3,
+            1,
+            3,
+        )
+        .unwrap();
 
         let inventory = gather_inventory(
             root.join("tkstat.db"),

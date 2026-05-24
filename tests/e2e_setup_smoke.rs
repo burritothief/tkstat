@@ -72,7 +72,7 @@ fn test_recommended_setup_and_reset_command_sequence() {
     assert!(String::from_utf8_lossy(&force.stderr).contains("ingested 5 new records"));
     let force_stdout = String::from_utf8_lossy(&force.stdout);
     assert!(force_stdout.contains("all providers / by provider"));
-    assert!(force_stdout.contains("claude"));
+    assert!(force_stdout.contains("claude-code"));
     assert!(force_stdout.contains("codex"));
 
     let daily = run_tkstat(
@@ -142,6 +142,32 @@ fn test_e2e_smoke_script_runs_with_compiled_binary() {
     assert!(stdout.contains("tkstat e2e smoke passed"));
     assert!(stderr.contains("--pricing-seed"));
     assert!(stderr.contains("--by-provider"));
+    assert!(!stdout.contains("/.claude"));
+    assert!(!stderr.contains("/.claude"));
+    assert!(!stdout.contains("/.codex"));
+    assert!(!stderr.contains("/.codex"));
+}
+
+#[test]
+fn test_operational_script_smoke_runs_with_compiled_binary() {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/script_smoke.sh");
+    let output = Command::new("bash")
+        .arg(script)
+        .env("TKSTAT_BIN", env!("CARGO_BIN_EXE_tkstat"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("tkstat operational script smoke passed"));
+    assert!(stderr.contains("fixture_smoke.sh --help"));
+    assert!(stderr.contains("pricing_check.sh --provider invalid"));
     assert!(!stdout.contains("/.claude"));
     assert!(!stderr.contains("/.claude"));
     assert!(!stdout.contains("/.codex"));
