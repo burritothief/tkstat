@@ -530,14 +530,14 @@ mod tests {
         assert_eq!(report.parse_errors, 0);
         assert_eq!(report.findings.len(), 2);
         assert!(report.findings.iter().any(|finding| {
-            finding.provider == "codex"
+            finding.provider == ProviderId::Codex
                 && finding.path == unreadable
                 && finding.severity == IngestFindingSeverity::Error
                 && finding.kind == IngestFindingKind::FileError
                 && finding.message.contains("permission denied")
         }));
         assert!(report.findings.iter().any(|finding| {
-            finding.provider == "codex"
+            finding.provider == ProviderId::Codex
                 && finding.path == parser_failure
                 && finding.severity == IngestFindingSeverity::Error
                 && finding.kind == IngestFindingKind::FileError

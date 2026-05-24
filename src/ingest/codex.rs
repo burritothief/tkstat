@@ -310,7 +310,7 @@ mod tests {
         let records = parse_session_bytes(lines.as_bytes(), &source_file());
         assert_eq!(records.len(), 1);
         let record = &records[0];
-        assert_eq!(record.provider, CODEX_PROVIDER);
+        assert_eq!(record.provider, ProviderId::Codex);
         assert_eq!(record.session_id, "synthetic-codex-session");
         assert_eq!(record.model_id, "gpt-5.5");
         assert_eq!(record.project, "tkstat");
