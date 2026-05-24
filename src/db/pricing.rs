@@ -5,7 +5,8 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 use crate::domain::pricing::{
-    PricingInterval, TokenCategory, billable_token_categories_for_counts, billable_usage_components,
+    PricingDimensions, PricingInterval, TokenCategory, billable_token_categories_for_counts,
+    billable_usage_components,
 };
 use crate::domain::provider::ProviderId;
 use crate::domain::timestamp::{format_utc_rfc3339, parse_canonical_utc_rfc3339};
@@ -56,6 +57,7 @@ struct AuditKey<'a> {
     provider: &'a str,
     model_id: &'a str,
     category: TokenCategory,
+    dimensions: &'a PricingDimensions,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -65,7 +67,7 @@ struct RawAuditKey<'a> {
     category: &'a str,
 }
 
-type UsageCoverageKey = (String, String, TokenCategory);
+type UsageCoverageKey = (String, String, TokenCategory, PricingDimensions);
 type UsageCoverageRange = (DateTime<Utc>, DateTime<Utc>);
 
 #[derive(Debug, Clone)]
@@ -73,6 +75,11 @@ struct RawPricingInterval {
     provider: String,
     model_id: String,
     token_category: String,
+    service_tier: Option<String>,
+    speed: Option<String>,
+    region: Option<String>,
+    processing_mode: Option<String>,
+    source_detail: Option<String>,
     currency: String,
     rate_per_1m_tokens: Option<f64>,
     effective_from: String,
@@ -80,11 +87,17 @@ struct RawPricingInterval {
     source: String,
 }
 
-fn audit_key<'a>(provider: &'a str, model_id: &'a str, category: TokenCategory) -> AuditKey<'a> {
+fn audit_key<'a>(
+    provider: &'a str,
+    model_id: &'a str,
+    category: TokenCategory,
+    dimensions: &'a PricingDimensions,
+) -> AuditKey<'a> {
     AuditKey {
         provider,
         model_id,
         category,
+        dimensions,
     }
 }
 
@@ -108,12 +121,18 @@ impl PricingFetcher for BundledPricingFetcher {
 pub fn insert_interval(conn: &Connection, interval: &PricingInterval) -> Result<()> {
     conn.execute(
         "INSERT INTO pricing_intervals
-            (provider, model_id, token_category, currency, rate_per_1m_tokens, effective_from, effective_to, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            (provider, model_id, token_category, service_tier, speed, region, processing_mode,
+             source_detail, currency, rate_per_1m_tokens, effective_from, effective_to, source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         rusqlite::params![
             interval.provider.as_str(),
             interval.model_id,
             interval.token_category.as_str(),
+            interval.dimensions.service_tier,
+            interval.dimensions.speed,
+            interval.dimensions.region,
+            interval.dimensions.processing_mode,
+            interval.dimensions.source_detail,
             interval.currency,
             interval.rate_per_1m_tokens,
             format_utc_rfc3339(interval.effective_from),
@@ -128,12 +147,18 @@ pub fn insert_interval_if_missing(conn: &Connection, interval: &PricingInterval)
     validate_interval(interval)?;
     let changed = conn.execute(
         "INSERT OR IGNORE INTO pricing_intervals
-            (provider, model_id, token_category, currency, rate_per_1m_tokens, effective_from, effective_to, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            (provider, model_id, token_category, service_tier, speed, region, processing_mode,
+             source_detail, currency, rate_per_1m_tokens, effective_from, effective_to, source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         rusqlite::params![
             interval.provider.as_str(),
             interval.model_id,
             interval.token_category.as_str(),
+            interval.dimensions.service_tier,
+            interval.dimensions.speed,
+            interval.dimensions.region,
+            interval.dimensions.processing_mode,
+            interval.dimensions.source_detail,
             interval.currency,
             interval.rate_per_1m_tokens,
             format_utc_rfc3339(interval.effective_from),
@@ -182,6 +207,7 @@ fn upsert_current_interval(conn: &Connection, interval: &PricingInterval) -> Res
         interval.provider,
         &interval.model_id,
         interval.token_category,
+        &interval.dimensions,
     )?;
 
     match existing {
@@ -208,13 +234,23 @@ fn upsert_current_interval(conn: &Connection, interval: &PricingInterval) -> Res
                  WHERE provider = ?2
                    AND model_id = ?3
                    AND token_category = ?4
-                   AND currency = ?5
-                   AND effective_from = ?6",
+                   AND service_tier IS ?5
+                   AND speed IS ?6
+                   AND region IS ?7
+                   AND processing_mode IS ?8
+                   AND source_detail IS ?9
+                   AND currency = ?10
+                   AND effective_from = ?11",
                 rusqlite::params![
                     format_utc_rfc3339(interval.effective_from),
                     existing.provider.as_str(),
                     existing.model_id,
                     existing.token_category.as_str(),
+                    existing.dimensions.service_tier,
+                    existing.dimensions.speed,
+                    existing.dimensions.region,
+                    existing.dimensions.processing_mode,
+                    existing.dimensions.source_detail,
                     existing.currency,
                     format_utc_rfc3339(existing.effective_from),
                 ],
@@ -231,20 +267,36 @@ fn open_interval(
     provider: ProviderId,
     model_id: &str,
     token_category: TokenCategory,
+    dimensions: &PricingDimensions,
 ) -> Result<Option<PricingInterval>> {
     let mut stmt = conn.prepare(
-        "SELECT provider, model_id, token_category, currency, rate_per_1m_tokens, effective_from, effective_to, source
+        "SELECT provider, model_id, token_category, service_tier, speed, region, processing_mode,
+                source_detail, currency, rate_per_1m_tokens, effective_from, effective_to, source
          FROM pricing_intervals
          WHERE provider = ?1
            AND model_id = ?2
            AND token_category = ?3
+           AND service_tier IS ?4
+           AND speed IS ?5
+           AND region IS ?6
+           AND processing_mode IS ?7
+           AND source_detail IS ?8
            AND currency = 'USD'
            AND effective_to IS NULL
          ORDER BY effective_from DESC",
     )?;
     let rows = stmt
         .query_map(
-            rusqlite::params![provider.as_str(), model_id, token_category.as_str()],
+            rusqlite::params![
+                provider.as_str(),
+                model_id,
+                token_category.as_str(),
+                dimensions.service_tier,
+                dimensions.speed,
+                dimensions.region,
+                dimensions.processing_mode,
+                dimensions.source_detail,
+            ],
             row_to_interval,
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -253,7 +305,8 @@ fn open_interval(
         0 => Ok(None),
         1 => Ok(rows.into_iter().next()),
         _ => bail!(
-            "multiple open prices for provider={provider}, model={model_id}, category={token_category}"
+            "multiple open prices for provider={provider}, model={model_id}, category={token_category}{}",
+            dimension_suffix(dimensions)
         ),
     }
 }
@@ -265,15 +318,39 @@ pub fn applicable_interval(
     token_category: TokenCategory,
     timestamp: DateTime<Utc>,
 ) -> Result<PricingInterval> {
+    applicable_interval_for_dimensions(
+        conn,
+        provider,
+        model_id,
+        token_category,
+        timestamp,
+        &PricingDimensions::default(),
+    )
+}
+
+pub fn applicable_interval_for_dimensions(
+    conn: &Connection,
+    provider: ProviderId,
+    model_id: &str,
+    token_category: TokenCategory,
+    timestamp: DateTime<Utc>,
+    dimensions: &PricingDimensions,
+) -> Result<PricingInterval> {
     let mut stmt = conn.prepare(
-        "SELECT provider, model_id, token_category, currency, rate_per_1m_tokens, effective_from, effective_to, source
+        "SELECT provider, model_id, token_category, service_tier, speed, region, processing_mode,
+                source_detail, currency, rate_per_1m_tokens, effective_from, effective_to, source
          FROM pricing_intervals
          WHERE provider = ?1
            AND model_id = ?2
            AND token_category = ?3
+           AND service_tier IS ?4
+           AND speed IS ?5
+           AND region IS ?6
+           AND processing_mode IS ?7
+           AND source_detail IS ?8
            AND currency = 'USD'
-           AND effective_from <= ?4
-           AND (effective_to IS NULL OR ?4 < effective_to)
+           AND effective_from <= ?9
+           AND (effective_to IS NULL OR ?9 < effective_to)
          ORDER BY effective_from ASC",
     )?;
 
@@ -283,6 +360,11 @@ pub fn applicable_interval(
                 provider.as_str(),
                 model_id,
                 token_category.as_str(),
+                dimensions.service_tier,
+                dimensions.speed,
+                dimensions.region,
+                dimensions.processing_mode,
+                dimensions.source_detail,
                 format_utc_rfc3339(timestamp),
             ],
             row_to_interval,
@@ -291,13 +373,15 @@ pub fn applicable_interval(
 
     match rows.len() {
         0 => bail!(
-            "missing price for provider={provider}, model={model_id}, category={token_category}, timestamp={}",
-            format_utc_rfc3339(timestamp)
+            "missing price for provider={provider}, model={model_id}, category={token_category}{}, timestamp={}",
+            dimension_suffix(dimensions),
+            format_utc_rfc3339(timestamp),
         ),
         1 => Ok(rows.into_iter().next().unwrap()),
         _ => bail!(
-            "overlapping prices for provider={provider}, model={model_id}, category={token_category}, timestamp={}",
-            format_utc_rfc3339(timestamp)
+            "overlapping prices for provider={provider}, model={model_id}, category={token_category}{}, timestamp={}",
+            dimension_suffix(dimensions),
+            format_utc_rfc3339(timestamp),
         ),
     }
 }
@@ -305,12 +389,14 @@ pub fn applicable_interval(
 pub fn calculate_record_cost(conn: &Connection, record: &TokenRecord) -> Result<f64> {
     let mut total = 0.0;
     for component in billable_usage_components(record) {
-        let interval = applicable_interval(
+        let dimensions = PricingDimensions::from_component(&component);
+        let interval = applicable_interval_for_dimensions(
             conn,
             component.provider,
             &component.model_id,
             component.token_category,
             component.timestamp,
+            &dimensions,
         )?;
         total += interval.cost_for_tokens(component.tokens);
     }
@@ -338,17 +424,28 @@ pub fn audit_pricing(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
 }
 
 fn audit_catalog(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
-    let mut stmt = conn.prepare(
-        "SELECT provider, model_id, token_category, currency, rate_per_1m_tokens, effective_from, effective_to, source
+    let dimension_select = pricing_dimension_select_list(conn)?;
+    let order_by = if pricing_intervals_have_dimensions(conn)? {
+        "provider, model_id, token_category, currency, service_tier, speed, region,
+         processing_mode, source_detail, effective_from"
+    } else {
+        "provider, model_id, token_category, currency, effective_from"
+    };
+    let sql = format!(
+        "SELECT provider, model_id, token_category, {dimension_select},
+                currency, rate_per_1m_tokens, effective_from, effective_to, source
          FROM pricing_intervals
-         ORDER BY provider, model_id, token_category, currency, effective_from",
-    )?;
+         ORDER BY {order_by}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let intervals = stmt
         .query_map([], row_to_raw_interval)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut findings = Vec::new();
-    let mut by_key: HashMap<(String, String, TokenCategory, String), Vec<PricingInterval>> =
-        HashMap::new();
+    let mut by_key: HashMap<
+        (String, String, TokenCategory, PricingDimensions, String),
+        Vec<PricingInterval>,
+    > = HashMap::new();
 
     for raw in intervals {
         findings.extend(raw_catalog_findings(&raw));
@@ -364,6 +461,7 @@ fn audit_catalog(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
                     interval.provider.as_str(),
                     &interval.model_id,
                     interval.token_category,
+                    &interval.dimensions,
                 ),
                 Some(interval.effective_from),
                 interval.effective_to,
@@ -375,13 +473,14 @@ fn audit_catalog(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
                 interval.provider.as_str().to_string(),
                 interval.model_id.clone(),
                 interval.token_category,
+                interval.dimensions.clone(),
                 interval.currency.clone(),
             ))
             .or_default()
             .push(interval);
     }
 
-    for ((provider, model_id, category, _currency), mut intervals) in by_key {
+    for ((provider, model_id, category, dimensions, _currency), mut intervals) in by_key {
         intervals.sort_by_key(|interval| interval.effective_from);
         let open_count = intervals
             .iter()
@@ -391,7 +490,7 @@ fn audit_catalog(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
             findings.push(finding(
                 PricingAuditSeverity::Warning,
                 PricingAuditKind::MissingCurrent,
-                audit_key(&provider, &model_id, category),
+                audit_key(&provider, &model_id, category, &dimensions),
                 intervals.last().map(|interval| interval.effective_from),
                 None,
                 "insert a current open-ended pricing interval",
@@ -401,7 +500,7 @@ fn audit_catalog(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
             findings.push(finding(
                 PricingAuditSeverity::Error,
                 PricingAuditKind::DuplicateCurrent,
-                audit_key(&provider, &model_id, category),
+                audit_key(&provider, &model_id, category, &dimensions),
                 None,
                 None,
                 "close superseded open pricing intervals",
@@ -415,7 +514,7 @@ fn audit_catalog(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
                 Some(to) if to < next.effective_from => findings.push(finding(
                     PricingAuditSeverity::Error,
                     PricingAuditKind::Gap,
-                    audit_key(&provider, &model_id, category),
+                    audit_key(&provider, &model_id, category, &dimensions),
                     Some(to),
                     Some(next.effective_from),
                     "insert a pricing interval that covers the gap",
@@ -423,7 +522,7 @@ fn audit_catalog(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
                 Some(to) if to > next.effective_from => findings.push(finding(
                     PricingAuditSeverity::Error,
                     PricingAuditKind::Overlap,
-                    audit_key(&provider, &model_id, category),
+                    audit_key(&provider, &model_id, category, &dimensions),
                     Some(next.effective_from),
                     Some(to),
                     "adjust effective_from/effective_to so intervals do not overlap",
@@ -431,7 +530,7 @@ fn audit_catalog(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
                 None => findings.push(finding(
                     PricingAuditSeverity::Error,
                     PricingAuditKind::Overlap,
-                    audit_key(&provider, &model_id, category),
+                    audit_key(&provider, &model_id, category, &dimensions),
                     Some(next.effective_from),
                     None,
                     "close the earlier open-ended interval before the next interval starts",
@@ -445,6 +544,12 @@ fn audit_catalog(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
 }
 
 fn audit_usage_coverage(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
+    if table_exists(conn, "usage_billing_components")?
+        && table_row_count(conn, "usage_billing_components")? > 0
+    {
+        return audit_component_usage_coverage(conn);
+    }
+
     let mut stmt = conn.prepare(
         "SELECT provider, model_id, timestamp, input_tokens, output_tokens, cache_read_tokens,
                 cache_creation_tokens, cached_input_tokens, reasoning_output_tokens
@@ -481,7 +586,12 @@ fn audit_usage_coverage(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
         );
         for (category, _tokens) in categories {
             usage
-                .entry((provider.clone(), model_id.clone(), category))
+                .entry((
+                    provider.clone(),
+                    model_id.clone(),
+                    category,
+                    PricingDimensions::default(),
+                ))
                 .and_modify(|(min, max)| {
                     *min = (*min).min(timestamp);
                     *max = (*max).max(timestamp);
@@ -490,9 +600,83 @@ fn audit_usage_coverage(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
         }
     }
 
-    for ((provider, model_id, category), (start, end)) in usage {
+    for ((provider, model_id, category, dimensions), (start, end)) in usage {
         findings.extend(audit_usage_key(
-            conn, &provider, &model_id, category, start, end,
+            conn,
+            &provider,
+            &model_id,
+            category,
+            &dimensions,
+            start,
+            end,
+        )?);
+    }
+    Ok(findings)
+}
+
+fn audit_component_usage_coverage(conn: &Connection) -> Result<Vec<PricingAuditFinding>> {
+    let mut stmt = conn.prepare(
+        "SELECT provider, model_id, timestamp, token_category, service_tier, speed, region,
+                processing_mode, source_detail
+         FROM usage_billing_components",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut usage: HashMap<UsageCoverageKey, UsageCoverageRange> = HashMap::new();
+    let mut findings = Vec::new();
+
+    while let Some(row) = rows.next()? {
+        let provider: String = row.get(0)?;
+        let model_id: String = row.get(1)?;
+        let timestamp: String = row.get(2)?;
+        let token_category: String = row.get(3)?;
+        let Ok(timestamp) = parse_canonical_utc_rfc3339(&timestamp) else {
+            findings.push(malformed_usage_timestamp_finding(
+                &provider, &model_id, &timestamp,
+            ));
+            continue;
+        };
+        if ProviderId::from_canonical(&provider).is_none() {
+            findings.push(unsupported_usage_provider_finding(
+                &provider, &model_id, timestamp,
+            ));
+            continue;
+        };
+        let Ok(category) = token_category.parse::<TokenCategory>() else {
+            findings.push(finding_raw(
+                PricingAuditSeverity::Error,
+                PricingAuditKind::MalformedUsageRow,
+                raw_audit_key(&provider, &model_id, &token_category),
+                Some(format_utc_rfc3339(timestamp)),
+                Some(format_utc_rfc3339(timestamp)),
+                "store usage_billing_components.token_category as a supported token category",
+            ));
+            continue;
+        };
+        let dimensions = PricingDimensions {
+            service_tier: row.get(4)?,
+            speed: row.get(5)?,
+            region: row.get(6)?,
+            processing_mode: row.get(7)?,
+            source_detail: row.get(8)?,
+        };
+        usage
+            .entry((provider, model_id, category, dimensions))
+            .and_modify(|(min, max)| {
+                *min = (*min).min(timestamp);
+                *max = (*max).max(timestamp);
+            })
+            .or_insert((timestamp, timestamp));
+    }
+
+    for ((provider, model_id, category, dimensions), (start, end)) in usage {
+        findings.extend(audit_usage_key(
+            conn,
+            &provider,
+            &model_id,
+            category,
+            &dimensions,
+            start,
+            end,
         )?);
     }
     Ok(findings)
@@ -533,24 +717,60 @@ fn audit_usage_key(
     provider: &str,
     model_id: &str,
     category: TokenCategory,
+    dimensions: &PricingDimensions,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
 ) -> Result<Vec<PricingAuditFinding>> {
-    let mut stmt = conn.prepare(
-        "SELECT provider, model_id, token_category, currency, rate_per_1m_tokens, effective_from, effective_to, source
-         FROM pricing_intervals
-         WHERE provider = ?1
-           AND model_id = ?2
-           AND token_category = ?3
-           AND currency = 'USD'
-         ORDER BY effective_from",
-    )?;
-    let raw_intervals = stmt
-        .query_map(
+    let raw_intervals = if pricing_intervals_have_dimensions(conn)? {
+        let mut stmt = conn.prepare(
+            "SELECT provider, model_id, token_category, service_tier, speed, region, processing_mode,
+                    source_detail, currency, rate_per_1m_tokens, effective_from, effective_to, source
+             FROM pricing_intervals
+             WHERE provider = ?1
+               AND model_id = ?2
+               AND token_category = ?3
+               AND service_tier IS ?4
+               AND speed IS ?5
+               AND region IS ?6
+               AND processing_mode IS ?7
+               AND source_detail IS ?8
+               AND currency = 'USD'
+             ORDER BY effective_from",
+        )?;
+        stmt.query_map(
+            rusqlite::params![
+                provider,
+                model_id,
+                category.as_str(),
+                dimensions.service_tier,
+                dimensions.speed,
+                dimensions.region,
+                dimensions.processing_mode,
+                dimensions.source_detail,
+            ],
+            row_to_raw_interval,
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    } else if dimensions.is_default() {
+        let mut stmt = conn.prepare(
+            "SELECT provider, model_id, token_category, NULL AS service_tier, NULL AS speed,
+                    NULL AS region, NULL AS processing_mode, NULL AS source_detail,
+                    currency, rate_per_1m_tokens, effective_from, effective_to, source
+             FROM pricing_intervals
+             WHERE provider = ?1
+               AND model_id = ?2
+               AND token_category = ?3
+               AND currency = 'USD'
+             ORDER BY effective_from",
+        )?;
+        stmt.query_map(
             rusqlite::params![provider, model_id, category.as_str()],
             row_to_raw_interval,
         )?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
     let intervals: Vec<PricingInterval> = raw_intervals
         .iter()
         .filter_map(raw_to_valid_interval)
@@ -560,7 +780,7 @@ fn audit_usage_key(
         return Ok(vec![finding(
             PricingAuditSeverity::Error,
             PricingAuditKind::MissingCoverage,
-            audit_key(provider, model_id, category),
+            audit_key(provider, model_id, category, dimensions),
             Some(start),
             Some(end),
             "run `tkstat --pricing-seed` or `tkstat --pricing-refresh`",
@@ -572,7 +792,7 @@ fn audit_usage_key(
         findings.push(finding(
             PricingAuditSeverity::Error,
             PricingAuditKind::UsageBeforeFirstInterval,
-            audit_key(provider, model_id, category),
+            audit_key(provider, model_id, category, dimensions),
             Some(start),
             Some(intervals[0].effective_from),
             "add pricing effective before the first usage timestamp",
@@ -585,7 +805,7 @@ fn audit_usage_key(
             findings.push(finding(
                 PricingAuditSeverity::Error,
                 PricingAuditKind::MissingCoverage,
-                audit_key(provider, model_id, category),
+                audit_key(provider, model_id, category, dimensions),
                 Some(cursor),
                 Some(interval.effective_from),
                 "insert a pricing interval that covers the usage gap",
@@ -605,7 +825,7 @@ fn audit_usage_key(
         findings.push(finding(
             PricingAuditSeverity::Error,
             PricingAuditKind::UsageAfterLastInterval,
-            audit_key(provider, model_id, category),
+            audit_key(provider, model_id, category, dimensions),
             Some(cursor),
             Some(end),
             "add a current pricing interval that covers the latest usage",
@@ -622,13 +842,21 @@ fn finding(
     end: Option<DateTime<Utc>>,
     remediation: &str,
 ) -> PricingAuditFinding {
+    let remediation = if key.dimensions.is_default() {
+        remediation.to_string()
+    } else {
+        format!(
+            "{remediation}; pricing dimensions {}",
+            dimension_summary(key.dimensions)
+        )
+    };
     finding_raw(
         severity,
         kind,
         raw_audit_key(key.provider, key.model_id, key.category.as_str()),
         start.map(format_utc_rfc3339),
         end.map(format_utc_rfc3339),
-        remediation,
+        &remediation,
     )
 }
 
@@ -686,6 +914,40 @@ fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     Ok(count > 0)
 }
 
+fn table_row_count(conn: &Connection, table: &str) -> Result<i64> {
+    let sql = format!("SELECT COUNT(*) FROM {table}");
+    Ok(conn.query_row(&sql, [], |row| row.get(0))?)
+}
+
+fn pricing_intervals_have_dimensions(conn: &Connection) -> Result<bool> {
+    if !table_exists(conn, "pricing_intervals")? {
+        return Ok(false);
+    }
+    let columns: Vec<String> = conn
+        .prepare("PRAGMA table_info(pricing_intervals)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok([
+        "service_tier",
+        "speed",
+        "region",
+        "processing_mode",
+        "source_detail",
+    ]
+    .iter()
+    .all(|column| columns.iter().any(|existing| existing == column)))
+}
+
+fn pricing_dimension_select_list(conn: &Connection) -> Result<&'static str> {
+    if pricing_intervals_have_dimensions(conn)? {
+        Ok("service_tier, speed, region, processing_mode, source_detail")
+    } else {
+        Ok(
+            "NULL AS service_tier, NULL AS speed, NULL AS region, NULL AS processing_mode, NULL AS source_detail",
+        )
+    }
+}
+
 fn raw_catalog_findings(raw: &RawPricingInterval) -> Vec<PricingAuditFinding> {
     let mut findings = Vec::new();
     for (field, value) in [
@@ -705,6 +967,20 @@ fn raw_catalog_findings(raw: &RawPricingInterval) -> Vec<PricingAuditFinding> {
     }
     if raw.rate_per_1m_tokens.is_none() {
         findings.push(malformed_finding(raw, "store a numeric non-negative rate"));
+    }
+    for (field, value) in [
+        ("service_tier", raw.service_tier.as_deref()),
+        ("speed", raw.speed.as_deref()),
+        ("region", raw.region.as_deref()),
+        ("processing_mode", raw.processing_mode.as_deref()),
+        ("source_detail", raw.source_detail.as_deref()),
+    ] {
+        if value.is_some_and(|value| value.trim().is_empty()) {
+            findings.push(malformed_finding(
+                raw,
+                &format!("store {field} as NULL or a non-empty pricing dimension"),
+            ));
+        }
     }
     if ProviderId::from_canonical(raw.provider.as_str()).is_none() {
         findings.push(malformed_finding(
@@ -796,6 +1072,13 @@ fn raw_to_valid_interval(raw: &RawPricingInterval) -> Option<PricingInterval> {
         provider,
         model_id: raw.model_id.clone(),
         token_category,
+        dimensions: PricingDimensions {
+            service_tier: raw.service_tier.clone(),
+            speed: raw.speed.clone(),
+            region: raw.region.clone(),
+            processing_mode: raw.processing_mode.clone(),
+            source_detail: raw.source_detail.clone(),
+        },
         currency: raw.currency.clone(),
         rate_per_1m_tokens: rate,
         effective_from,
@@ -809,11 +1092,16 @@ fn row_to_raw_interval(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawPricingIn
         provider: text_cell(row, 0)?,
         model_id: text_cell(row, 1)?,
         token_category: text_cell(row, 2)?,
-        currency: text_cell(row, 3)?,
-        rate_per_1m_tokens: numeric_cell(row, 4)?,
-        effective_from: text_cell(row, 5)?,
-        effective_to: optional_text_cell(row, 6)?,
-        source: text_cell(row, 7)?,
+        service_tier: optional_text_cell(row, 3)?,
+        speed: optional_text_cell(row, 4)?,
+        region: optional_text_cell(row, 5)?,
+        processing_mode: optional_text_cell(row, 6)?,
+        source_detail: optional_text_cell(row, 7)?,
+        currency: text_cell(row, 8)?,
+        rate_per_1m_tokens: numeric_cell(row, 9)?,
+        effective_from: text_cell(row, 10)?,
+        effective_to: optional_text_cell(row, 11)?,
+        source: text_cell(row, 12)?,
     })
 }
 
@@ -849,8 +1137,8 @@ fn numeric_cell(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<Option<
 fn row_to_interval(row: &rusqlite::Row<'_>) -> rusqlite::Result<PricingInterval> {
     let provider: String = row.get(0)?;
     let token_category: String = row.get(2)?;
-    let effective_from: String = row.get(5)?;
-    let effective_to: Option<String> = row.get(6)?;
+    let effective_from: String = row.get(10)?;
+    let effective_to: Option<String> = row.get(11)?;
     Ok(PricingInterval {
         provider: ProviderId::from_canonical(&provider).ok_or_else(|| {
             rusqlite::Error::FromSqlConversionFailure(
@@ -863,24 +1151,63 @@ fn row_to_interval(row: &rusqlite::Row<'_>) -> rusqlite::Result<PricingInterval>
         token_category: token_category.parse().map_err(|e: String| {
             rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, e.into())
         })?,
-        currency: row.get(3)?,
-        rate_per_1m_tokens: row.get(4)?,
+        dimensions: PricingDimensions {
+            service_tier: row.get(3)?,
+            speed: row.get(4)?,
+            region: row.get(5)?,
+            processing_mode: row.get(6)?,
+            source_detail: row.get(7)?,
+        },
+        currency: row.get(8)?,
+        rate_per_1m_tokens: row.get(9)?,
         effective_from: parse_canonical_utc_rfc3339(&effective_from).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
+            rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e))
         })?,
         effective_to: effective_to
             .map(|dt| {
                 parse_canonical_utc_rfc3339(&dt).map_err(|e| {
                     rusqlite::Error::FromSqlConversionFailure(
-                        6,
+                        11,
                         rusqlite::types::Type::Text,
                         Box::new(e),
                     )
                 })
             })
             .transpose()?,
-        source: row.get(7)?,
+        source: row.get(12)?,
     })
+}
+
+fn dimension_suffix(dimensions: &PricingDimensions) -> String {
+    if dimensions.is_default() {
+        String::new()
+    } else {
+        format!(", dimensions={}", dimension_summary(dimensions))
+    }
+}
+
+fn dimension_summary(dimensions: &PricingDimensions) -> String {
+    let mut parts = Vec::new();
+    if let Some(value) = &dimensions.service_tier {
+        parts.push(format!("service_tier={value}"));
+    }
+    if let Some(value) = &dimensions.speed {
+        parts.push(format!("speed={value}"));
+    }
+    if let Some(value) = &dimensions.region {
+        parts.push(format!("region={value}"));
+    }
+    if let Some(value) = &dimensions.processing_mode {
+        parts.push(format!("processing_mode={value}"));
+    }
+    if let Some(value) = &dimensions.source_detail {
+        parts.push(format!("source_detail={value}"));
+    }
+    if parts.is_empty() {
+        "default".into()
+    } else {
+        parts.join(",")
+    }
 }
 
 pub fn validate_interval(interval: &PricingInterval) -> Result<()> {
@@ -897,6 +1224,28 @@ pub fn validate_interval(interval: &PricingInterval) -> Result<()> {
             interval.model_id,
             interval.token_category
         ));
+    }
+    for (field, value) in [
+        ("service_tier", interval.dimensions.service_tier.as_deref()),
+        ("speed", interval.dimensions.speed.as_deref()),
+        ("region", interval.dimensions.region.as_deref()),
+        (
+            "processing_mode",
+            interval.dimensions.processing_mode.as_deref(),
+        ),
+        (
+            "source_detail",
+            interval.dimensions.source_detail.as_deref(),
+        ),
+    ] {
+        if value.is_some_and(|value| value.trim().is_empty()) {
+            return Err(anyhow!(
+                "invalid pricing dimension {field} for provider={}, model={}, category={}: use NULL or a non-empty value",
+                interval.provider,
+                interval.model_id,
+                interval.token_category
+            ));
+        }
     }
     if let Some(effective_to) = interval.effective_to
         && effective_to <= interval.effective_from
@@ -1060,6 +1409,11 @@ mod tests {
         interval
     }
 
+    fn with_speed(mut interval: PricingInterval, speed: &str) -> PricingInterval {
+        interval.dimensions.speed = Some(speed.into());
+        interval
+    }
+
     fn record(model_id: &str) -> TokenRecord {
         TokenRecord {
             provider: crate::domain::provider::ProviderId::ClaudeCode,
@@ -1217,6 +1571,66 @@ mod tests {
         )
         .unwrap();
         assert_eq!(selected.rate_per_1m_tokens, 15.0);
+    }
+
+    #[test]
+    fn test_lookup_selects_matching_pricing_dimensions_and_default_only_matches_default() {
+        let db = Database::open_in_memory().unwrap();
+        insert_interval(
+            db.conn(),
+            &interval(TokenCategory::Input, 10.0, "2026-01-01T00:00:00Z", None),
+        )
+        .unwrap();
+        insert_interval(
+            db.conn(),
+            &with_speed(
+                interval(TokenCategory::Input, 20.0, "2026-01-01T00:00:00Z", None),
+                "fast",
+            ),
+        )
+        .unwrap();
+
+        let default = applicable_interval(
+            db.conn(),
+            ProviderId::ClaudeCode,
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            "2026-04-07T10:00:00Z".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(default.rate_per_1m_tokens, 10.0);
+
+        let fast_dimensions = PricingDimensions {
+            speed: Some("fast".into()),
+            ..Default::default()
+        };
+        let fast = applicable_interval_for_dimensions(
+            db.conn(),
+            ProviderId::ClaudeCode,
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            "2026-04-07T10:00:00Z".parse().unwrap(),
+            &fast_dimensions,
+        )
+        .unwrap();
+        assert_eq!(fast.rate_per_1m_tokens, 20.0);
+
+        let priority_dimensions = PricingDimensions {
+            speed: Some("priority".into()),
+            ..Default::default()
+        };
+        let err = applicable_interval_for_dimensions(
+            db.conn(),
+            ProviderId::ClaudeCode,
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            "2026-04-07T10:00:00Z".parse().unwrap(),
+            &priority_dimensions,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("missing price"));
+        assert!(err.contains("speed=priority"));
     }
 
     #[test]
@@ -1491,6 +1905,46 @@ mod tests {
                 .iter()
                 .any(|finding| finding.kind == PricingAuditKind::DuplicateCurrent)
         );
+    }
+
+    #[test]
+    fn test_pricing_audit_treats_modifier_timelines_independently() {
+        let db = Database::open_in_memory().unwrap();
+        insert_interval(
+            db.conn(),
+            &interval(TokenCategory::Input, 10.0, "2026-01-01T00:00:00Z", None),
+        )
+        .unwrap();
+        insert_interval(
+            db.conn(),
+            &with_speed(
+                interval(
+                    TokenCategory::Input,
+                    20.0,
+                    "2026-01-01T00:00:00Z",
+                    Some("2026-02-01T00:00:00Z"),
+                ),
+                "fast",
+            ),
+        )
+        .unwrap();
+        insert_interval(
+            db.conn(),
+            &with_speed(
+                interval(TokenCategory::Input, 30.0, "2026-03-01T00:00:00Z", None),
+                "fast",
+            ),
+        )
+        .unwrap();
+
+        let findings = audit_pricing(db.conn()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding.kind == PricingAuditKind::Gap && finding.remediation.contains("speed=fast")
+        }));
+        assert!(!findings.iter().any(|finding| {
+            finding.kind == PricingAuditKind::DuplicateCurrent
+                || finding.kind == PricingAuditKind::Overlap
+        }));
     }
 
     #[test]
@@ -1866,6 +2320,55 @@ mod tests {
         )
         .unwrap();
         assert_eq!(selected.rate_per_1m_tokens, 15.0);
+    }
+
+    #[test]
+    fn test_refresh_pricing_updates_only_matching_pricing_dimensions() {
+        let db = Database::open_in_memory().unwrap();
+        insert_interval(
+            db.conn(),
+            &interval(TokenCategory::Input, 10.0, "2026-01-01T00:00:00Z", None),
+        )
+        .unwrap();
+        insert_interval(
+            db.conn(),
+            &with_speed(
+                interval(TokenCategory::Input, 20.0, "2026-01-01T00:00:00Z", None),
+                "fast",
+            ),
+        )
+        .unwrap();
+
+        let changed = with_speed(
+            interval(TokenCategory::Input, 30.0, "2026-04-01T00:00:00Z", None),
+            "fast",
+        );
+        let fetcher = MockFetcher {
+            intervals: vec![changed],
+        };
+        assert_eq!(refresh_pricing(db.conn(), &fetcher).unwrap(), 2);
+
+        let default_open_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM pricing_intervals
+                 WHERE speed IS NULL AND effective_to IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(default_open_count, 1);
+
+        let old_fast_to: String = db
+            .conn()
+            .query_row(
+                "SELECT effective_to FROM pricing_intervals
+                 WHERE speed = 'fast' AND rate_per_1m_tokens = 20.0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_fast_to, "2026-04-01T00:00:00+00:00");
     }
 
     #[test]

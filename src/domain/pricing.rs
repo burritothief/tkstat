@@ -94,6 +94,36 @@ pub struct BillableUsageComponent {
     pub source_detail: Option<String>,
 }
 
+/// Normalized dimensions that can affect a provider's pricing rate.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct PricingDimensions {
+    pub service_tier: Option<String>,
+    pub speed: Option<String>,
+    pub region: Option<String>,
+    pub processing_mode: Option<String>,
+    pub source_detail: Option<String>,
+}
+
+impl PricingDimensions {
+    pub fn from_component(component: &BillableUsageComponent) -> Self {
+        Self {
+            service_tier: component.service_tier.clone(),
+            speed: component.speed.clone(),
+            region: component.region.clone(),
+            processing_mode: component.processing_mode.clone(),
+            source_detail: component.source_detail.clone(),
+        }
+    }
+
+    pub fn is_default(&self) -> bool {
+        self.service_tier.is_none()
+            && self.speed.is_none()
+            && self.region.is_none()
+            && self.processing_mode.is_none()
+            && self.source_detail.is_none()
+    }
+}
+
 const DEFAULT_BILLING_RULES: [BillableTokenRule; 6] = [
     BillableTokenRule {
         category: TokenCategory::Input,
@@ -184,6 +214,7 @@ pub struct PricingInterval {
     pub provider: ProviderId,
     pub model_id: String,
     pub token_category: TokenCategory,
+    pub dimensions: PricingDimensions,
     pub currency: String,
     pub rate_per_1m_tokens: f64,
     pub effective_from: DateTime<Utc>,
@@ -204,6 +235,7 @@ impl PricingInterval {
             provider,
             model_id: model_id.into(),
             token_category,
+            dimensions: PricingDimensions::default(),
             currency: "USD".into(),
             rate_per_1m_tokens,
             effective_from,

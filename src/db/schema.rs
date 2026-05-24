@@ -6,7 +6,7 @@ use crate::domain::provider::ProviderId;
 use crate::domain::timestamp::parse_canonical_utc_rfc3339;
 use crate::domain::usage::{ModelFamily, TokenRecord};
 
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -28,12 +28,22 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
 
     match current {
         Some(v) if v >= SCHEMA_VERSION => {}
+        Some(v) if v >= 9 => {
+            eprintln!(
+                "tkstat database schema {v} is older than {SCHEMA_VERSION}; adding pricing modifier dimensions."
+            );
+            migrate_provider_ids(&tx)?;
+            migrate_pricing_dimensions(&tx)?;
+            create_tables(&tx)?;
+            set_version(&tx, SCHEMA_VERSION)?;
+        }
         Some(v) if v >= 8 => {
             eprintln!(
-                "tkstat database schema {v} is older than {SCHEMA_VERSION}; adding normalized billing components for existing usage rows."
+                "tkstat database schema {v} is older than {SCHEMA_VERSION}; adding normalized billing components and pricing modifier dimensions for existing usage rows."
             );
-            create_tables(&tx)?;
             migrate_provider_ids(&tx)?;
+            migrate_pricing_dimensions(&tx)?;
+            create_tables(&tx)?;
             backfill_usage_billing_components(&tx)?;
             set_version(&tx, SCHEMA_VERSION)?;
         }
@@ -47,8 +57,9 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
                  DROP TABLE IF EXISTS token_usage;
                  DROP TABLE IF EXISTS file_state;",
             )?;
-            create_tables(&tx)?;
             migrate_provider_ids(&tx)?;
+            migrate_pricing_dimensions(&tx)?;
+            create_tables(&tx)?;
             backfill_usage_billing_components(&tx)?;
             set_version(&tx, SCHEMA_VERSION)?;
         }
@@ -65,6 +76,9 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
 }
 
 fn migrate_provider_ids(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "pricing_intervals")? {
+        return Ok(());
+    }
     conn.execute_batch(
         "UPDATE OR IGNORE pricing_intervals
             SET provider = 'claude-code'
@@ -73,6 +87,72 @@ fn migrate_provider_ids(conn: &Connection) -> Result<()> {
           WHERE provider = 'claude';",
     )?;
     Ok(())
+}
+
+fn migrate_pricing_dimensions(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "pricing_intervals")? || pricing_intervals_has_dimensions(conn)? {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_pricing_lookup;
+         DROP INDEX IF EXISTS idx_pricing_model;
+         ALTER TABLE pricing_intervals RENAME TO pricing_intervals_old;
+
+         CREATE TABLE pricing_intervals (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider            TEXT NOT NULL CHECK(provider IN ('claude-code', 'codex')),
+            model_id            TEXT NOT NULL CHECK(model_id <> ''),
+            token_category      TEXT NOT NULL CHECK(token_category <> ''),
+            service_tier        TEXT,
+            speed               TEXT,
+            region              TEXT,
+            processing_mode     TEXT,
+            source_detail       TEXT,
+            currency            TEXT NOT NULL DEFAULT 'USD' CHECK(currency <> ''),
+            rate_per_1m_tokens  REAL NOT NULL CHECK(rate_per_1m_tokens >= 0),
+            effective_from      TEXT NOT NULL CHECK(effective_from <> ''),
+            effective_to        TEXT,
+            source              TEXT NOT NULL CHECK(source <> ''),
+            CHECK(effective_to IS NULL OR effective_to > effective_from)
+         );
+
+         INSERT INTO pricing_intervals
+            (provider, model_id, token_category, service_tier, speed, region, processing_mode,
+             source_detail, currency, rate_per_1m_tokens, effective_from, effective_to, source)
+         SELECT provider, model_id, token_category, NULL, NULL, NULL, NULL, NULL,
+                currency, rate_per_1m_tokens, effective_from, effective_to, source
+         FROM pricing_intervals_old;
+
+         DROP TABLE pricing_intervals_old;",
+    )?;
+    create_pricing_indexes(conn)?;
+    Ok(())
+}
+
+fn pricing_intervals_has_dimensions(conn: &Connection) -> Result<bool> {
+    let columns: Vec<String> = conn
+        .prepare("PRAGMA table_info(pricing_intervals)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok([
+        "service_tier",
+        "speed",
+        "region",
+        "processing_mode",
+        "source_detail",
+    ]
+    .iter()
+    .all(|column| columns.iter().any(|existing| existing == column)))
+}
+
+fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
 }
 
 fn create_tables(conn: &Connection) -> Result<()> {
@@ -149,17 +229,52 @@ fn create_tables(conn: &Connection) -> Result<()> {
             provider            TEXT NOT NULL CHECK(provider IN ('claude-code', 'codex')),
             model_id            TEXT NOT NULL CHECK(model_id <> ''),
             token_category      TEXT NOT NULL CHECK(token_category <> ''),
+            service_tier        TEXT,
+            speed               TEXT,
+            region              TEXT,
+            processing_mode     TEXT,
+            source_detail       TEXT,
             currency            TEXT NOT NULL DEFAULT 'USD' CHECK(currency <> ''),
             rate_per_1m_tokens  REAL NOT NULL CHECK(rate_per_1m_tokens >= 0),
             effective_from      TEXT NOT NULL CHECK(effective_from <> ''),
             effective_to        TEXT,
             source              TEXT NOT NULL CHECK(source <> ''),
-            CHECK(effective_to IS NULL OR effective_to > effective_from),
-            UNIQUE(provider, model_id, token_category, currency, effective_from)
-        );
+            CHECK(effective_to IS NULL OR effective_to > effective_from)
+        );",
+    )?;
+    create_pricing_indexes(conn)?;
+    Ok(())
+}
 
+fn create_pricing_indexes(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pricing_unique_key
+            ON pricing_intervals(
+                provider,
+                model_id,
+                token_category,
+                currency,
+                COALESCE(service_tier, ''),
+                COALESCE(speed, ''),
+                COALESCE(region, ''),
+                COALESCE(processing_mode, ''),
+                COALESCE(source_detail, ''),
+                effective_from
+            );
         CREATE INDEX IF NOT EXISTS idx_pricing_lookup
-            ON pricing_intervals(provider, model_id, token_category, currency, effective_from, effective_to);
+            ON pricing_intervals(
+                provider,
+                model_id,
+                token_category,
+                currency,
+                service_tier,
+                speed,
+                region,
+                processing_mode,
+                source_detail,
+                effective_from,
+                effective_to
+            );
         CREATE INDEX IF NOT EXISTS idx_pricing_model
             ON pricing_intervals(provider, model_id);",
     )?;
@@ -487,6 +602,67 @@ mod tests {
     }
 
     #[test]
+    fn test_schema_v9_adds_pricing_dimension_columns_without_losing_intervals() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (9);
+             CREATE TABLE pricing_intervals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL CHECK(provider IN ('claude-code', 'codex')),
+                model_id TEXT NOT NULL,
+                token_category TEXT NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'USD',
+                rate_per_1m_tokens REAL NOT NULL,
+                effective_from TEXT NOT NULL,
+                effective_to TEXT,
+                source TEXT NOT NULL,
+                UNIQUE(provider, model_id, token_category, currency, effective_from)
+             );
+             INSERT INTO pricing_intervals
+                (provider, model_id, token_category, currency, rate_per_1m_tokens, effective_from, effective_to, source)
+             VALUES
+                ('codex', 'gpt-5.5', 'input', 'USD', 2.5, '2026-01-01T00:00:00+00:00', NULL, 'legacy-v9');",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(pricing_intervals)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        for column in [
+            "service_tier",
+            "speed",
+            "region",
+            "processing_mode",
+            "source_detail",
+        ] {
+            assert!(columns.contains(&column.to_string()), "missing {column}");
+        }
+
+        let (count, rate, speed): (i64, f64, Option<String>) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(rate_per_1m_tokens), MAX(speed) FROM pricing_intervals",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(rate, 2.5);
+        assert_eq!(speed, None);
+    }
+
+    #[test]
     fn test_migration_rolls_back_table_rebuild_and_provider_rewrite_on_failure() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -649,6 +825,11 @@ mod tests {
             "provider",
             "model_id",
             "token_category",
+            "service_tier",
+            "speed",
+            "region",
+            "processing_mode",
+            "source_detail",
             "currency",
             "rate_per_1m_tokens",
             "effective_from",
@@ -665,6 +846,7 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
+        assert!(indexes.contains(&"idx_pricing_unique_key".to_string()));
         assert!(indexes.contains(&"idx_pricing_lookup".to_string()));
         assert!(indexes.contains(&"idx_pricing_model".to_string()));
     }
