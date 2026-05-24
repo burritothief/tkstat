@@ -67,6 +67,10 @@ section "Database"
 printf 'path: %s\n' "$db"
 printf 'size: %s bytes\n' "$(wc -c <"$db" | tr -d ' ')"
 
+section "Timezone Note"
+printf 'raw token_usage.timestamp and pricing_intervals effective_* values are UTC RFC3339 instants\n'
+printf 'tkstat report periods render in the system local timezone by default; use --utc for UTC report buckets\n'
+
 if table_exists schema_version; then
   section "Schema"
   sql "SELECT version FROM schema_version LIMIT 1;"

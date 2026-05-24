@@ -122,6 +122,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   before_checksum="$(checksum_file "$db" || true)"
   inspect_out="$(TKSTAT_BIN="$bin" "$script_dir/db_inspect.sh" "$db")"
   assert_contains "$inspect_out" "== Database =="
+  assert_contains "$inspect_out" "raw token_usage.timestamp and pricing_intervals effective_* values are UTC RFC3339 instants"
   assert_contains "$inspect_out" "== Pricing Audit =="
   if [[ -n "$before_checksum" ]]; then
     after_checksum="$(checksum_file "$db")"
