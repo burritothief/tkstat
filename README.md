@@ -33,6 +33,7 @@ tkstat --by-model   # usage grouped by exact model id
 tkstat --by-provider # usage grouped by provider
 tkstat --by-project # usage grouped by project
 tkstat --provider codex --by-model  # Codex usage by exact model id
+tkstat --utc -d      # daily usage with UTC calendar buckets
 ```
 
 Daily:
@@ -109,10 +110,11 @@ tkstat --provider claude-code  # only Claude Code usage (`claude` is accepted as
 tkstat --provider codex        # only Codex usage
 tkstat -p myproject         # filter by project name (substring match)
 tkstat -b 2026-03-01 -e 2026-03-31   # date range
+tkstat --utc -b 2026-03-01 -e 2026-03-31  # date range using UTC days
 tkstat --no-subagents       # exclude subagent usage
 ```
 
-Report buckets and `--begin`/`--end` date filters use UTC dates, regardless of the host machine's local timezone. This keeps daily/hourly output deterministic across machines and daylight-saving transitions.
+Report buckets and `--begin`/`--end` date filters use the system local timezone by default. This means a raw log event at `2026-05-24T00:40:00Z` appears in the `2026-05-23` daily bucket on a machine set to America/Los_Angeles. Use `--utc` when you want report periods and date filters to use UTC calendar boundaries instead.
 
 ### Column selection
 
@@ -165,7 +167,7 @@ Budget warnings are printed to stderr and use the active provider/model/project/
 
 ## How it works
 
-Claude Code stores session logs under its projects directory. Codex stores session logs under its dated sessions directory. Each provider adapter normalizes its own token records into the local database.
+Claude Code stores session logs under its projects directory. Codex stores session logs under its dated sessions directory. Each provider adapter normalizes its own token records into UTC instants in the local database.
 
 `tkstat` maintains a SQLite database (at `~/.local/share/tkstat/tkstat.db`) that caches parsed token records. On each run it checks which JSONL files have changed since the last read (by file size and mtime) and only parses the new bytes.
 
@@ -186,7 +188,13 @@ tkstat --force-update           # full re-ingest
 
 The default database location is `~/.local/share/tkstat/tkstat.db`. You can also set the `TKSTAT_DB` environment variable.
 
-Schema v8 stores provider plus exact model identity for every usage row and uses a local effective-dated pricing catalog. Provider ids are canonical storage keys (`claude-code`, `codex`); friendly CLI aliases such as `--provider claude` are normalized before querying. Because `tkstat` is pre-1.0, upgrading from an older schema rebuilds the usage cache and migrates legacy Claude pricing keys; run `tkstat --force-update` if you need to force a clean reingest.
+Schema v8 stores provider plus exact model identity for every usage row and uses a local effective-dated pricing catalog. `token_usage.timestamp` and `pricing_intervals.effective_from` / `effective_to` are stored as canonical UTC RFC3339 instants. Provider ids are canonical storage keys (`claude-code`, `codex`); friendly CLI aliases such as `--provider claude` are normalized before querying. Because `tkstat` is pre-1.0, upgrading from an older schema rebuilds the usage cache and migrates legacy Claude pricing keys; run `tkstat --force-update` if you need to force a clean reingest.
+
+### Timezone model
+
+Raw SQLite timestamp columns are UTC instants. Human-facing table, JSON, CSV, chart, heatmap, top-day, and budget period labels are rendered in the system local timezone by default. `--begin` and `--end` filter those rendered report dates, not raw UTC date strings. `--utc` switches report buckets and date filters to UTC without changing stored timestamps, token totals, or pricing math.
+
+Pricing coverage always uses UTC instants and pricing effective intervals. Changing the report timezone only changes which period label a usage row belongs to.
 
 ### Provider and pricing examples
 

@@ -56,7 +56,7 @@ pub enum OutputMode {
     about = "vnstat-style monitor for Claude Code token usage",
     version,
     disable_help_flag = true,
-    after_help = "Examples:\n  tkstat            Daily token usage (default)\n  tkstat -5         5-minute resolution\n  tkstat -h         Hourly statistics\n  tkstat -m         Monthly summary\n  tkstat -t 10      Top 10 days by usage\n  tkstat --model opus   Filter by model family alias\n  tkstat --model claude-sonnet-4-5-20250929   Filter by exact model id\n  tkstat --by-model     Group by exact model id\n  tkstat --by-provider  Group by provider\n  tkstat --by-project   Group by project\n  tkstat --budget       Budget consumption\n  tkstat --heatmap  GitHub-style usage calendar\n  tkstat --chart    Braille time-series chart\n  tkstat --json -d  Daily stats as JSON"
+    after_help = "Examples:\n  tkstat            Daily token usage (default, system-local dates)\n  tkstat --utc -d   Daily stats with UTC calendar buckets\n  tkstat -5         5-minute resolution\n  tkstat -h         Hourly statistics\n  tkstat -m         Monthly summary\n  tkstat -t 10      Top 10 days by usage\n  tkstat --model opus   Filter by model family alias\n  tkstat --model claude-sonnet-4-5-20250929   Filter by exact model id\n  tkstat --by-model     Group by exact model id\n  tkstat --by-provider  Group by provider\n  tkstat --by-project   Group by project\n  tkstat --budget       Budget consumption\n  tkstat --heatmap  GitHub-style usage calendar\n  tkstat --chart    Braille time-series chart\n  tkstat --json -d  Daily stats as JSON"
 )]
 pub struct Cli {
     /// Print help
@@ -152,15 +152,15 @@ pub struct Cli {
     #[arg(long = "session", value_name = "SESSION_ID")]
     pub session: Option<String>,
 
-    /// Begin report-local date for filtering (YYYY-MM-DD)
+    /// Begin system-local report date for filtering (YYYY-MM-DD); use --utc for UTC
     #[arg(short = 'b', long = "begin", value_name = "DATE")]
     pub begin: Option<NaiveDate>,
 
-    /// End report-local date for filtering (YYYY-MM-DD)
+    /// End system-local report date for filtering (YYYY-MM-DD); use --utc for UTC
     #[arg(short = 'e', long = "end", value_name = "DATE")]
     pub end: Option<NaiveDate>,
 
-    /// Use UTC calendar boundaries for report periods and date filters
+    /// Use UTC calendar boundaries instead of the system local timezone
     #[arg(long = "utc")]
     pub utc: bool,
 
@@ -441,7 +441,9 @@ mod tests {
         assert!(help.contains("--monthly-budget-usd"));
         assert!(help.contains("--budget"));
         assert!(help.contains("--utc"));
-        assert!(help.contains("report-local date"));
+        assert!(help.contains("system-local report date"));
+        assert!(help.contains("UTC calendar boundaries"));
+        assert!(help.contains("tkstat --utc -d"));
         assert!(help.contains("exact model id"));
     }
 

@@ -6,6 +6,18 @@ use support::*;
 use std::process::Command;
 
 #[test]
+fn test_help_documents_local_report_timezone_and_utc_override() {
+    let root = temp_root("help-timezone");
+    let output = run_tkstat(&root, ["--help"]);
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("system-local report date"));
+    assert!(stdout.contains("UTC calendar boundaries"));
+    assert!(stdout.contains("tkstat --utc -d"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn test_recommended_setup_and_reset_command_sequence() {
     let root = temp_root("recommended-sequence");
     let projects = make_claude_corpus_fixture(&root);
