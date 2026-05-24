@@ -257,21 +257,73 @@ pub fn nonzero_token_categories(record: &TokenRecord) -> Vec<(TokenCategory, u64
 }
 
 pub fn billable_usage_components(record: &TokenRecord) -> Vec<BillableUsageComponent> {
-    billable_token_categories(record.provider, TokenCounts::from(record))
-        .into_iter()
-        .map(|(token_category, tokens)| BillableUsageComponent {
-            provider: record.provider,
-            model_id: record.model_id.clone(),
-            timestamp: record.timestamp,
-            token_category,
-            tokens,
-            service_tier: None,
-            speed: None,
-            region: None,
-            processing_mode: None,
-            source_detail: None,
-        })
-        .collect()
+    let mut components = Vec::new();
+    for (token_category, tokens) in
+        billable_token_categories(record.provider, TokenCounts::from(record))
+    {
+        if token_category == TokenCategory::CacheCreation
+            && (record.cache_creation_5m_tokens > 0 || record.cache_creation_1h_tokens > 0)
+        {
+            push_cache_creation_components(record, &mut components);
+            continue;
+        }
+        components.push(component(record, token_category, tokens, None));
+    }
+    components
+}
+
+fn push_cache_creation_components(
+    record: &TokenRecord,
+    components: &mut Vec<BillableUsageComponent>,
+) {
+    if record.cache_creation_5m_tokens > 0 {
+        components.push(component(
+            record,
+            TokenCategory::CacheCreation,
+            record.cache_creation_5m_tokens,
+            Some("ephemeral_5m"),
+        ));
+    }
+    if record.cache_creation_1h_tokens > 0 {
+        components.push(component(
+            record,
+            TokenCategory::CacheCreation,
+            record.cache_creation_1h_tokens,
+            Some("ephemeral_1h"),
+        ));
+    }
+
+    let split_total = record
+        .cache_creation_5m_tokens
+        .saturating_add(record.cache_creation_1h_tokens);
+    if record.cache_creation_tokens > split_total {
+        components.push(component(
+            record,
+            TokenCategory::CacheCreation,
+            record.cache_creation_tokens - split_total,
+            None,
+        ));
+    }
+}
+
+fn component(
+    record: &TokenRecord,
+    token_category: TokenCategory,
+    tokens: u64,
+    source_detail: Option<&str>,
+) -> BillableUsageComponent {
+    BillableUsageComponent {
+        provider: record.provider,
+        model_id: record.model_id.clone(),
+        timestamp: record.timestamp,
+        token_category,
+        tokens,
+        service_tier: record.service_tier.clone(),
+        speed: record.speed.clone(),
+        region: record.region.clone(),
+        processing_mode: None,
+        source_detail: source_detail.map(str::to_string),
+    }
 }
 
 pub fn billable_token_categories_for_counts(
@@ -426,6 +478,11 @@ mod tests {
             cache_read_tokens: 0,
             cached_input_tokens: 40,
             reasoning_output_tokens: 7,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            service_tier: None,
+            speed: None,
+            region: None,
             cost_usd: 0.0,
             project: "tkstat".into(),
             source_file: "/tmp/session.jsonl".into(),
@@ -463,6 +520,11 @@ mod tests {
             cache_read_tokens: 40,
             cached_input_tokens: 0,
             reasoning_output_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            service_tier: None,
+            speed: None,
+            region: None,
             cost_usd: 0.0,
             project: "demo".into(),
             source_file: "/tmp/claude.jsonl".into(),
@@ -482,6 +544,11 @@ mod tests {
             cache_read_tokens: 0,
             cached_input_tokens: 40,
             reasoning_output_tokens: 7,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            service_tier: None,
+            speed: None,
+            region: None,
             cost_usd: 0.0,
             project: "tkstat".into(),
             source_file: "/tmp/codex.jsonl".into(),
@@ -522,6 +589,52 @@ mod tests {
             component_cost,
             (100 * 10) + (20 * 20) + (30 * 30) + (40 * 40) + (60 * 2) + 40 + (20 * 8)
         );
+    }
+
+    #[test]
+    fn test_claude_cache_creation_components_preserve_ttl_and_request_modifiers() {
+        let record = TokenRecord {
+            provider: ProviderId::ClaudeCode,
+            request_id: "claude-r1".into(),
+            session_id: "claude-s1".into(),
+            uuid: "claude-u1".into(),
+            timestamp: "2026-04-07T10:00:00Z".parse().unwrap(),
+            model: ModelFamily::Opus,
+            model_id: "claude-opus-4-6".into(),
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_creation_tokens: 150,
+            cache_read_tokens: 40,
+            cached_input_tokens: 0,
+            reasoning_output_tokens: 0,
+            cache_creation_5m_tokens: 100,
+            cache_creation_1h_tokens: 50,
+            service_tier: Some("standard".into()),
+            speed: Some("fast".into()),
+            region: Some("us".into()),
+            cost_usd: 0.0,
+            project: "demo".into(),
+            source_file: "/tmp/claude.jsonl".into(),
+            is_subagent: false,
+        };
+
+        let components = billable_usage_components(&record);
+        assert_eq!(record.cache_creation_tokens, 150);
+        assert!(components.iter().any(|component| {
+            component.token_category == TokenCategory::CacheCreation
+                && component.tokens == 100
+                && component.source_detail.as_deref() == Some("ephemeral_5m")
+        }));
+        assert!(components.iter().any(|component| {
+            component.token_category == TokenCategory::CacheCreation
+                && component.tokens == 50
+                && component.source_detail.as_deref() == Some("ephemeral_1h")
+        }));
+        assert!(components.iter().all(|component| {
+            component.service_tier.as_deref() == Some("standard")
+                && component.speed.as_deref() == Some("fast")
+                && component.region.as_deref() == Some("us")
+        }));
     }
 
     #[test]

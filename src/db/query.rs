@@ -6,8 +6,9 @@ use rusqlite::Connection;
 
 use crate::domain::period::{ReportTimeZone, TimePeriod, day_sql_expr};
 use crate::domain::pricing::{
-    BillableTokenExpression, TokenCategory, TokenCountField, billable_token_categories_for_counts,
-    billable_token_rule, default_billing_rules, provider_billing_policies,
+    BillableTokenExpression, PricingDimensions, TokenCategory, TokenCountField,
+    billable_token_categories_for_counts, billable_token_rule, default_billing_rules,
+    provider_billing_policies,
 };
 use crate::domain::provider::ProviderId;
 use crate::domain::timestamp::{format_utc_rfc3339, parse_canonical_utc_rfc3339};
@@ -567,9 +568,16 @@ struct CoverageKey {
     provider: String,
     model_id: String,
     category: TokenCategory,
+    dimensions: PricingDimensions,
 }
 
 fn validate_pricing_coverage(conn: &Connection, filter: &QueryFilter) -> Result<()> {
+    if table_exists(conn, "usage_billing_components")?
+        && table_row_count(conn, "usage_billing_components")? > 0
+    {
+        return validate_component_pricing_coverage(conn, filter);
+    }
+
     let (where_clause, params) = build_where_clause(filter);
     let sql = format!(
         "SELECT provider, model_id, timestamp, input_tokens, output_tokens, cache_read_tokens,
@@ -615,6 +623,7 @@ fn validate_pricing_coverage(conn: &Connection, filter: &QueryFilter) -> Result<
                 provider: provider.clone(),
                 model_id: model_id.clone(),
                 category,
+                dimensions: PricingDimensions::default(),
             };
             coverage
                 .entry(key)
@@ -624,6 +633,66 @@ fn validate_pricing_coverage(conn: &Connection, filter: &QueryFilter) -> Result<
                 })
                 .or_insert((timestamp, timestamp));
         }
+    }
+
+    for (key, (start, end)) in coverage {
+        validate_category_coverage(conn, &key, start, end)?;
+    }
+
+    Ok(())
+}
+
+fn validate_component_pricing_coverage(conn: &Connection, filter: &QueryFilter) -> Result<()> {
+    let (where_clause, params) = build_where_clause(filter);
+    let sql = format!(
+        "SELECT c.provider, c.model_id, c.timestamp, c.token_category, c.service_tier, c.speed,
+                c.region, c.processing_mode, c.source_detail
+         FROM (SELECT provider, request_id FROM token_usage WHERE 1=1 {where_clause}) token_usage
+         JOIN usage_billing_components c
+           ON c.provider = token_usage.provider
+          AND c.request_id = token_usage.request_id"
+    );
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let mut coverage: HashMap<CoverageKey, (DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
+    let mut rows = stmt.query(param_refs.as_slice())?;
+
+    while let Some(row) = rows.next()? {
+        let provider: String = row.get(0)?;
+        let model_id: String = row.get(1)?;
+        let timestamp: String = row.get(2)?;
+        let token_category: String = row.get(3)?;
+        let timestamp = parse_canonical_utc_rfc3339(&timestamp).map_err(|err| {
+            anyhow::anyhow!(
+                "missing pricing coverage for provider={provider}, model={model_id}, category=timestamp, usage timestamp {timestamp}; {err}, reingest or repair usage_billing_components.timestamp"
+            )
+        })?;
+        let category = token_category.parse::<TokenCategory>().map_err(|err| {
+            anyhow::anyhow!(
+                "missing pricing coverage for provider={provider}, model={model_id}, category={token_category}, usage range {} to {}; {err}, reingest or repair usage_billing_components.token_category",
+                format_utc_rfc3339(timestamp),
+                format_utc_rfc3339(timestamp)
+            )
+        })?;
+        let key = CoverageKey {
+            provider,
+            model_id,
+            category,
+            dimensions: PricingDimensions {
+                service_tier: row.get(4)?,
+                speed: row.get(5)?,
+                region: row.get(6)?,
+                processing_mode: row.get(7)?,
+                source_detail: row.get(8)?,
+            },
+        };
+        coverage
+            .entry(key)
+            .and_modify(|(min, max)| {
+                *min = (*min).min(timestamp);
+                *max = (*max).max(timestamp);
+            })
+            .or_insert((timestamp, timestamp));
     }
 
     for (key, (start, end)) in coverage {
@@ -645,9 +714,14 @@ fn validate_category_coverage(
          WHERE provider = ?1
            AND model_id = ?2
            AND token_category = ?3
+           AND service_tier IS ?4
+           AND speed IS ?5
+           AND region IS ?6
+           AND processing_mode IS ?7
+           AND source_detail IS ?8
            AND currency = 'USD'
-           AND effective_from <= ?4
-           AND (effective_to IS NULL OR effective_to > ?5)
+           AND effective_from <= ?9
+           AND (effective_to IS NULL OR effective_to > ?10)
          ORDER BY effective_from ASC",
     )?;
     let intervals = stmt
@@ -656,6 +730,11 @@ fn validate_category_coverage(
                 key.provider,
                 key.model_id,
                 key.category.as_str(),
+                key.dimensions.service_tier,
+                key.dimensions.speed,
+                key.dimensions.region,
+                key.dimensions.processing_mode,
+                key.dimensions.source_detail,
                 format_utc_rfc3339(end),
                 format_utc_rfc3339(start),
             ],
@@ -669,10 +748,11 @@ fn validate_category_coverage(
 
     if intervals.is_empty() {
         bail!(
-            "missing pricing coverage for provider={}, model={}, category={}, usage range {} to {}; run `tkstat --pricing-refresh` or `tkstat --pricing-seed`",
+            "missing pricing coverage for provider={}, model={}, category={}{}, usage range {} to {}; run `tkstat --pricing-refresh` or `tkstat --pricing-seed`",
             key.provider,
             key.model_id,
             key.category,
+            dimension_suffix(&key.dimensions),
             format_utc_rfc3339(start),
             format_utc_rfc3339(end)
         );
@@ -689,20 +769,22 @@ fn validate_category_coverage(
 
         if from > cursor {
             bail!(
-                "missing pricing coverage for provider={}, model={}, category={}, gap {} to {}; run `tkstat --pricing-refresh` or `tkstat --pricing-seed`",
+                "missing pricing coverage for provider={}, model={}, category={}{}, gap {} to {}; run `tkstat --pricing-refresh` or `tkstat --pricing-seed`",
                 key.provider,
                 key.model_id,
                 key.category,
+                dimension_suffix(&key.dimensions),
                 format_utc_rfc3339(cursor),
                 format_utc_rfc3339(from)
             );
         }
         if saw_covering_interval && from < cursor {
             bail!(
-                "overlapping pricing intervals for provider={}, model={}, category={} near {}",
+                "overlapping pricing intervals for provider={}, model={}, category={}{} near {}",
                 key.provider,
                 key.model_id,
                 key.category,
+                dimension_suffix(&key.dimensions),
                 format_utc_rfc3339(from)
             );
         }
@@ -720,10 +802,11 @@ fn validate_category_coverage(
             None => {
                 if let Some((next_from, _)) = intervals.get(idx + 1) {
                     bail!(
-                        "overlapping pricing intervals for provider={}, model={}, category={} near {}",
+                        "overlapping pricing intervals for provider={}, model={}, category={}{} near {}",
                         key.provider,
                         key.model_id,
                         key.category,
+                        dimension_suffix(&key.dimensions),
                         next_from
                     );
                 }
@@ -733,13 +816,52 @@ fn validate_category_coverage(
     }
 
     bail!(
-        "missing pricing coverage for provider={}, model={}, category={}, gap {} to {}; run `tkstat --pricing-refresh` or `tkstat --pricing-seed`",
+        "missing pricing coverage for provider={}, model={}, category={}{}, gap {} to {}; run `tkstat --pricing-refresh` or `tkstat --pricing-seed`",
         key.provider,
         key.model_id,
         key.category,
+        dimension_suffix(&key.dimensions),
         format_utc_rfc3339(cursor),
         format_utc_rfc3339(end)
     )
+}
+
+fn dimension_suffix(dimensions: &PricingDimensions) -> String {
+    let mut parts = Vec::new();
+    if let Some(value) = &dimensions.service_tier {
+        parts.push(format!("service_tier={value}"));
+    }
+    if let Some(value) = &dimensions.speed {
+        parts.push(format!("speed={value}"));
+    }
+    if let Some(value) = &dimensions.region {
+        parts.push(format!("region={value}"));
+    }
+    if let Some(value) = &dimensions.processing_mode {
+        parts.push(format!("processing_mode={value}"));
+    }
+    if let Some(value) = &dimensions.source_detail {
+        parts.push(format!("source_detail={value}"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", parts.join(","))
+    }
+}
+
+fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+fn table_row_count(conn: &Connection, table: &str) -> Result<i64> {
+    let sql = format!("SELECT COUNT(*) FROM {table}");
+    Ok(conn.query_row(&sql, [], |row| row.get(0))?)
 }
 
 // -- Gap filling --
@@ -1049,6 +1171,11 @@ mod tests {
             cache_read_tokens: 0,
             cached_input_tokens: 0,
             reasoning_output_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            service_tier: None,
+            speed: None,
+            region: None,
             cost_usd: (input as f64 * 15.0 + output as f64 * 75.0) / 1_000_000.0,
             project: project.into(),
             source_file: "/test.jsonl".into(),
@@ -1892,6 +2019,35 @@ mod tests {
         assert!(err.contains("missing pricing coverage"));
         assert!(err.contains("claude-opus-4-6"));
         assert!(err.contains("tkstat --pricing-refresh"));
+    }
+
+    #[test]
+    fn test_query_fails_when_component_pricing_modifier_is_missing() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_pricing_interval(&price(
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            10.0,
+            "2026-01-01T00:00:00Z",
+            None,
+        ))
+        .unwrap();
+        let mut record = make_record("r1", "2026-04-05T10:00:00Z", "opus", "proj-a", 1_000_000, 0);
+        record.output_tokens = 0;
+        record.speed = Some("fast".into());
+        db.insert_records(&[record]).unwrap();
+
+        let err = query_summary(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("missing pricing coverage"));
+        assert!(err.contains("speed=fast"));
     }
 
     #[test]

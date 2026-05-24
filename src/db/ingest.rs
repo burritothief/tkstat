@@ -108,11 +108,26 @@ mod tests {
             cache_read_tokens: 500,
             cached_input_tokens: 0,
             reasoning_output_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            service_tier: None,
+            speed: None,
+            region: None,
             cost_usd: 0.05,
             project: "test".into(),
             source_file: "/test.jsonl".into(),
             is_subagent: false,
         }
+    }
+
+    #[derive(Debug)]
+    struct ComponentRow {
+        category: String,
+        tokens: i64,
+        service_tier: Option<String>,
+        speed: Option<String>,
+        region: Option<String>,
+        source_detail: Option<String>,
     }
 
     #[test]
@@ -242,6 +257,59 @@ mod tests {
                 ("cached_input".into(), 40),
             ]
         );
+    }
+
+    #[test]
+    fn test_inserted_claude_billing_components_preserve_cache_ttl_and_modifiers() {
+        let db = Database::open_in_memory().unwrap();
+        let mut record = make_record("r1", 42);
+        record.cache_creation_tokens = 150;
+        record.cache_creation_5m_tokens = 100;
+        record.cache_creation_1h_tokens = 50;
+        record.service_tier = Some("standard".into());
+        record.speed = Some("fast".into());
+        record.region = Some("us".into());
+        db.insert_records(&[record]).unwrap();
+
+        let rows: Vec<ComponentRow> = db
+            .conn()
+            .prepare(
+                "SELECT token_category, tokens, service_tier, speed, region, source_detail
+                 FROM usage_billing_components
+                 WHERE provider = 'claude-code' AND request_id = 'r1'
+                 ORDER BY component_ordinal",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok(ComponentRow {
+                    category: row.get(0)?,
+                    tokens: row.get(1)?,
+                    service_tier: row.get(2)?,
+                    speed: row.get(3)?,
+                    region: row.get(4)?,
+                    source_detail: row.get(5)?,
+                })
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(rows.len(), 5);
+        assert!(rows.iter().all(|row| {
+            row.service_tier.as_deref() == Some("standard")
+                && row.speed.as_deref() == Some("fast")
+                && row.region.as_deref() == Some("us")
+        }));
+        assert!(rows.iter().any(|row| {
+            row.category == "cache_creation"
+                && row.tokens == 100
+                && row.source_detail.as_deref() == Some("ephemeral_5m")
+        }));
+        assert!(rows.iter().any(|row| {
+            row.category == "cache_creation"
+                && row.tokens == 50
+                && row.source_detail.as_deref() == Some("ephemeral_1h")
+        }));
     }
 
     #[test]

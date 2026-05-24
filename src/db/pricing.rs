@@ -1414,6 +1414,11 @@ mod tests {
         interval
     }
 
+    fn with_source_detail(mut interval: PricingInterval, source_detail: &str) -> PricingInterval {
+        interval.dimensions.source_detail = Some(source_detail.into());
+        interval
+    }
+
     fn record(model_id: &str) -> TokenRecord {
         TokenRecord {
             provider: crate::domain::provider::ProviderId::ClaudeCode,
@@ -1429,6 +1434,11 @@ mod tests {
             cache_read_tokens: 0,
             cached_input_tokens: 0,
             reasoning_output_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            service_tier: None,
+            speed: None,
+            region: None,
             cost_usd: 0.0,
             project: "test".into(),
             source_file: "/test.jsonl".into(),
@@ -1743,6 +1753,85 @@ mod tests {
         let cost = calculate_record_cost(db.conn(), &usage).unwrap();
         let expected = (60.0 * 10.0 + 40.0 * 1.0 + 20.0 * 100.0) / 1_000_000.0;
         assert!((cost - expected).abs() < 0.000001);
+    }
+
+    #[test]
+    fn test_calculate_claude_cost_requires_cache_creation_source_detail_prices() {
+        let db = Database::open_in_memory().unwrap();
+        for (category, rate) in [
+            (TokenCategory::Input, 10.0),
+            (TokenCategory::Output, 20.0),
+            (TokenCategory::CacheRead, 1.0),
+            (TokenCategory::CacheCreation, 12.0),
+        ] {
+            insert_interval(
+                db.conn(),
+                &interval(category, rate, "2026-01-01T00:00:00Z", None),
+            )
+            .unwrap();
+        }
+
+        let mut usage = record("claude-opus-4-6");
+        usage.input_tokens = 0;
+        usage.output_tokens = 0;
+        usage.cache_creation_tokens = 150;
+        usage.cache_creation_5m_tokens = 100;
+        usage.cache_creation_1h_tokens = 50;
+
+        let err = calculate_record_cost(db.conn(), &usage)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("source_detail=ephemeral_5m"));
+
+        insert_interval(
+            db.conn(),
+            &with_source_detail(
+                interval(
+                    TokenCategory::CacheCreation,
+                    12.0,
+                    "2026-01-01T00:00:00Z",
+                    None,
+                ),
+                "ephemeral_5m",
+            ),
+        )
+        .unwrap();
+        insert_interval(
+            db.conn(),
+            &with_source_detail(
+                interval(
+                    TokenCategory::CacheCreation,
+                    60.0,
+                    "2026-01-01T00:00:00Z",
+                    None,
+                ),
+                "ephemeral_1h",
+            ),
+        )
+        .unwrap();
+
+        let cost = calculate_record_cost(db.conn(), &usage).unwrap();
+        let expected = (100.0 * 12.0 + 50.0 * 60.0) / 1_000_000.0;
+        assert!((cost - expected).abs() < 0.000001);
+    }
+
+    #[test]
+    fn test_calculate_claude_cost_requires_speed_specific_price() {
+        let db = Database::open_in_memory().unwrap();
+        insert_interval(
+            db.conn(),
+            &interval(TokenCategory::Input, 10.0, "2026-01-01T00:00:00Z", None),
+        )
+        .unwrap();
+
+        let mut usage = record("claude-opus-4-6");
+        usage.output_tokens = 0;
+        usage.speed = Some("fast".into());
+
+        let err = calculate_record_cost(db.conn(), &usage)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("speed=fast"));
     }
 
     #[test]
