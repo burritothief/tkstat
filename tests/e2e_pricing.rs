@@ -1,6 +1,7 @@
 //! Fixture-driven black-box CLI tests.
 
 mod support;
+use std::process::Command;
 use support::*;
 
 #[test]
@@ -378,6 +379,106 @@ fn test_cost_report_overlapping_component_prices_writes_no_csv_stdout() {
 }
 
 #[test]
+fn test_pricing_import_imports_reviewed_catalog_file() {
+    let root = temp_root("pricing-import-reviewed-catalog");
+    fs::create_dir_all(&root).unwrap();
+    let projects = root.join("empty-projects");
+    fs::create_dir_all(&projects).unwrap();
+    let db = root.join("tkstat.db");
+    let catalog = root.join("reviewed-catalog.json");
+    fs::write(
+        &catalog,
+        cli_pricing_catalog("claude-opus-4-6", 13.0, "2026-01-01T00:00:00+00:00"),
+    )
+    .unwrap();
+
+    let output = run_tkstat(
+        &root,
+        [
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+            "--pricing-import",
+            catalog.to_str().unwrap(),
+        ],
+    );
+    assert_success(&output);
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("imported pricing catalog with 1 interval changes")
+    );
+
+    let conn = Connection::open(&db).unwrap();
+    let rate: f64 = conn
+        .query_row(
+            "SELECT rate_per_1m_tokens FROM pricing_intervals
+             WHERE provider = 'claude-code'
+               AND model_id = 'claude-opus-4-6'
+               AND token_category = 'input'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(rate, 13.0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn test_update_pricing_catalog_script_parses_sanitized_fixtures_offline() {
+    let root = temp_root("pricing-catalog-updater-fixtures");
+    fs::create_dir_all(&root).unwrap();
+    let output_catalog = root.join("generated-catalog.json");
+
+    let output = Command::new("python3")
+        .args([
+            "scripts/update_pricing_catalog.py",
+            "--from-fixtures",
+            "--anthropic-html",
+            "tests/fixtures/pricing/anthropic_pricing.html",
+            "--openai-json",
+            "tests/fixtures/pricing/openai_pricing.json",
+            "--retrieved-at",
+            "2026-05-24",
+            "--effective-from",
+            "2026-05-24T00:00:00+00:00",
+            "--output",
+            output_catalog.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "catalog updater failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let generated: Value = serde_json::from_slice(&fs::read(&output_catalog).unwrap()).unwrap();
+    let entries = generated["entries"].as_array().unwrap();
+    assert!(entries.iter().any(|entry| {
+        entry["provider"] == "claude-code"
+            && entry["model_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model == "claude-opus-fixture")
+    }));
+    assert!(entries.iter().any(|entry| {
+        entry["provider"] == "codex"
+            && entry["dimensions"]["processing_mode"] == "batch"
+            && entry["model_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model == "gpt-fixture-codex-batch")
+    }));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn test_pricing_audit_missing_database_is_read_only() {
     let root = temp_root("pricing-audit-missing-db");
     let db = root.join("missing.db");
@@ -428,6 +529,40 @@ fn cli_claude_record(request_id: &str, timestamp: &str) -> TokenRecord {
         source_file: "/pricing-e2e.jsonl".into(),
         is_subagent: false,
     }
+}
+
+fn cli_pricing_catalog(model_id: &str, rate: f64, effective_from: &str) -> String {
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "notes": "offline pricing snapshot test catalog",
+  "sources": [
+    {{
+      "id": "reviewed-source",
+      "url": "https://example.com/pricing",
+      "retrieved_at": "2026-05-23",
+      "notes": "reviewed test source"
+    }}
+  ],
+  "entries": [
+    {{
+      "provider": "claude-code",
+      "model_ids": ["{model_id}"],
+      "model_aliases": ["opus"],
+      "currency": "USD",
+      "effective_from": "{effective_from}",
+      "effective_to": null,
+      "source": "seed:reviewed-source",
+      "source_ref": "reviewed-source",
+      "dimensions": {{}},
+      "rates_per_1m_tokens": {{
+        "input": {rate}
+      }},
+      "notes": "reviewed test entry"
+    }}
+  ]
+}}"#
+    )
 }
 
 #[test]

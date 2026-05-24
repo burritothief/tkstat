@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -81,6 +82,12 @@ fn main() -> Result<()> {
     if cli.pricing_refresh {
         let changed = database.refresh_pricing(&db::pricing::BundledPricingFetcher)?;
         println!("refreshed pricing catalog with {changed} interval changes");
+        return Ok(());
+    }
+
+    if let Some(path) = &cli.pricing_import {
+        let changed = database.import_pricing_catalog(Path::new(path))?;
+        println!("imported pricing catalog with {changed} interval changes");
         return Ok(());
     }
 

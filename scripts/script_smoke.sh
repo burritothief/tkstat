@@ -100,13 +100,17 @@ fi
 expect_success_contains "Usage: scripts/db_inspect.sh" "$script_dir/db_inspect.sh" --help
 expect_success_contains "Usage: scripts/fixture_smoke.sh" "$script_dir/fixture_smoke.sh" --help
 expect_success_contains "Usage: scripts/pricing_check.sh" "$script_dir/pricing_check.sh" --help
+expect_success_contains "Build or validate tkstat pricing catalog snapshots" python3 "$script_dir/update_pricing_catalog.py" --help
 expect_success_contains "Usage: scripts/dev_check.sh" "$script_dir/dev_check.sh" --help
 expect_success_contains "Usage: scripts/release_check.sh" "$script_dir/release_check.sh" --help
 
 expect_failure_contains "unknown argument" "$script_dir/fixture_smoke.sh" --bogus
 expect_failure_contains "invalid provider" "$script_dir/pricing_check.sh" --provider invalid
+expect_failure_contains "pricing catalog update failed" python3 "$script_dir/update_pricing_catalog.py" --validate-only --catalog "$tmp_root/missing-catalog.json"
 expect_failure_contains "Usage: scripts/release_check.sh" "$script_dir/release_check.sh" --skip-dev-check
 expect_failure_contains "unknown argument" "$script_dir/dev_check.sh" --bogus
+
+expect_success_contains "pricing catalog OK" python3 "$script_dir/update_pricing_catalog.py" --validate-only --catalog "$repo_root/pricing/catalog.json"
 
 fixture_out="$tmp_root/fixture_smoke.out"
 TKSTAT_BIN="$bin" "$script_dir/fixture_smoke.sh" >"$fixture_out"

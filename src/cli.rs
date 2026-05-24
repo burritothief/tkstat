@@ -190,6 +190,7 @@ pub struct Cli {
             "budget",
             "pricing_seed",
             "pricing_refresh",
+            "pricing_import",
             "pricing_audit"
         ]
     )]
@@ -231,6 +232,10 @@ pub struct Cli {
     /// Refresh pricing intervals from the configured pricing source and exit
     #[arg(long = "pricing-refresh")]
     pub pricing_refresh: bool,
+
+    /// Import a reviewed pricing catalog JSON file into the local database and exit
+    #[arg(long = "pricing-import", value_name = "PATH")]
+    pub pricing_import: Option<String>,
 
     /// Exclude subagent usage
     #[arg(long = "no-subagents")]
@@ -434,6 +439,7 @@ mod tests {
         assert!(help.contains("--provider"));
         assert!(help.contains("--pricing-seed"));
         assert!(help.contains("--pricing-refresh"));
+        assert!(help.contains("--pricing-import"));
         assert!(help.contains("--pricing-audit"));
         assert!(help.contains("--doctor"));
         assert!(help.contains("--csv"));
@@ -463,10 +469,16 @@ mod tests {
             "--budget",
             "--pricing-seed",
             "--pricing-refresh",
+            "--pricing-import",
             "--pricing-audit",
         ] {
+            let args = if flag == "--pricing-import" {
+                vec!["tkstat", "--csv", flag, "catalog.json"]
+            } else {
+                vec!["tkstat", "--csv", flag]
+            };
             assert!(
-                Cli::try_parse_from(["tkstat", "--csv", flag]).is_err(),
+                Cli::try_parse_from(args).is_err(),
                 "--csv should conflict with {flag}"
             );
         }

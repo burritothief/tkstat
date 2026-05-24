@@ -69,6 +69,10 @@ impl Database {
         pricing::refresh_pricing(&self.conn, fetcher)
     }
 
+    pub fn import_pricing_catalog(&self, path: &Path) -> Result<usize> {
+        pricing::import_pricing_catalog_file(&self.conn, path)
+    }
+
     pub fn calculate_record_cost(&self, record: &TokenRecord) -> Result<f64> {
         pricing::calculate_record_cost(&self.conn, record)
     }
