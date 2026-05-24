@@ -75,6 +75,25 @@ pub struct TokenCounts {
     pub reasoning_output_tokens: u64,
 }
 
+/// Normalized cost input derived from one usage row.
+///
+/// `token_usage` keeps wide token columns for display and compatibility. Cost
+/// lookup should use these normalized components so provider-specific pricing
+/// dimensions can be added without growing aggregate SQL indefinitely.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BillableUsageComponent {
+    pub provider: ProviderId,
+    pub model_id: String,
+    pub timestamp: DateTime<Utc>,
+    pub token_category: TokenCategory,
+    pub tokens: u64,
+    pub service_tier: Option<String>,
+    pub speed: Option<String>,
+    pub region: Option<String>,
+    pub processing_mode: Option<String>,
+    pub source_detail: Option<String>,
+}
+
 const DEFAULT_BILLING_RULES: [BillableTokenRule; 6] = [
     BillableTokenRule {
         category: TokenCategory::Input,
@@ -199,7 +218,28 @@ impl PricingInterval {
 }
 
 pub fn nonzero_token_categories(record: &TokenRecord) -> Vec<(TokenCategory, u64)> {
+    billable_usage_components(record)
+        .into_iter()
+        .map(|component| (component.token_category, component.tokens))
+        .collect()
+}
+
+pub fn billable_usage_components(record: &TokenRecord) -> Vec<BillableUsageComponent> {
     billable_token_categories(record.provider, TokenCounts::from(record))
+        .into_iter()
+        .map(|(token_category, tokens)| BillableUsageComponent {
+            provider: record.provider,
+            model_id: record.model_id.clone(),
+            timestamp: record.timestamp,
+            token_category,
+            tokens,
+            service_tier: None,
+            speed: None,
+            region: None,
+            processing_mode: None,
+            source_detail: None,
+        })
+        .collect()
 }
 
 pub fn billable_token_categories_for_counts(
@@ -373,5 +413,131 @@ mod tests {
                 .iter()
                 .any(|(c, _)| *c == TokenCategory::CacheRead)
         );
+    }
+
+    #[test]
+    fn test_billable_components_are_cost_source_while_wide_columns_remain_display_source() {
+        let claude = TokenRecord {
+            provider: ProviderId::ClaudeCode,
+            request_id: "claude-r1".into(),
+            session_id: "claude-s1".into(),
+            uuid: "claude-u1".into(),
+            timestamp: "2026-04-07T10:00:00Z".parse().unwrap(),
+            model: ModelFamily::Opus,
+            model_id: "claude-opus-4-6".into(),
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_creation_tokens: 30,
+            cache_read_tokens: 40,
+            cached_input_tokens: 0,
+            reasoning_output_tokens: 0,
+            cost_usd: 0.0,
+            project: "demo".into(),
+            source_file: "/tmp/claude.jsonl".into(),
+            is_subagent: false,
+        };
+        let codex = TokenRecord {
+            provider: ProviderId::Codex,
+            request_id: "codex-r1".into(),
+            session_id: "codex-s1".into(),
+            uuid: "codex-u1".into(),
+            timestamp: "2026-05-24T00:40:04Z".parse().unwrap(),
+            model: ModelFamily::Unknown,
+            model_id: "gpt-5.5".into(),
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+            cached_input_tokens: 40,
+            reasoning_output_tokens: 7,
+            cost_usd: 0.0,
+            project: "tkstat".into(),
+            source_file: "/tmp/codex.jsonl".into(),
+            is_subagent: false,
+        };
+
+        let claude_display_total = claude.input_tokens
+            + claude.output_tokens
+            + claude.cache_creation_tokens
+            + claude.cache_read_tokens;
+        let codex_display_total = codex.input_tokens + codex.output_tokens;
+        assert_eq!(claude_display_total, 190);
+        assert_eq!(codex_display_total, 120);
+
+        let claude_components = billable_usage_components(&claude);
+        assert_component(&claude_components, TokenCategory::Input, 100);
+        assert_component(&claude_components, TokenCategory::Output, 20);
+        assert_component(&claude_components, TokenCategory::CacheCreation, 30);
+        assert_component(&claude_components, TokenCategory::CacheRead, 40);
+
+        let codex_components = billable_usage_components(&codex);
+        assert_component(&codex_components, TokenCategory::Input, 60);
+        assert_component(&codex_components, TokenCategory::CachedInput, 40);
+        assert_component(&codex_components, TokenCategory::Output, 20);
+        assert!(
+            !codex_components
+                .iter()
+                .any(|component| component.token_category == TokenCategory::ReasoningOutput)
+        );
+
+        let component_cost = cost_from_components(
+            &claude_components
+                .iter()
+                .chain(codex_components.iter())
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            component_cost,
+            (100 * 10) + (20 * 20) + (30 * 30) + (40 * 40) + (60 * 2) + 40 + (20 * 8)
+        );
+    }
+
+    #[test]
+    fn test_pricing_architecture_doc_defines_table_roles() {
+        let doc = include_str!("../../docs/pricing-architecture.md");
+        assert!(doc.contains("Cost calculation must use normalized billable usage components"));
+        assert!(
+            doc.contains("token_usage`: deduplicated request-level usage and display aggregates")
+        );
+        assert!(doc.contains("usage_billing_components`: normalized priced line items"));
+        assert!(doc.contains("pricing_intervals`: effective-dated rates"));
+        assert!(doc.contains("fail closed"));
+    }
+
+    fn assert_component(
+        components: &[BillableUsageComponent],
+        category: TokenCategory,
+        tokens: u64,
+    ) {
+        assert!(
+            components.iter().any(|component| {
+                component.token_category == category
+                    && component.tokens == tokens
+                    && component.service_tier.is_none()
+                    && component.speed.is_none()
+                    && component.region.is_none()
+                    && component.processing_mode.is_none()
+            }),
+            "missing component {category:?}/{tokens} in {components:?}"
+        );
+    }
+
+    fn cost_from_components(components: &[&BillableUsageComponent]) -> u64 {
+        components
+            .iter()
+            .map(|component| {
+                let rate = match (component.provider, component.token_category) {
+                    (ProviderId::ClaudeCode, TokenCategory::Input) => 10,
+                    (ProviderId::ClaudeCode, TokenCategory::Output) => 20,
+                    (ProviderId::ClaudeCode, TokenCategory::CacheCreation) => 30,
+                    (ProviderId::ClaudeCode, TokenCategory::CacheRead) => 40,
+                    (ProviderId::Codex, TokenCategory::Input) => 2,
+                    (ProviderId::Codex, TokenCategory::CachedInput) => 1,
+                    (ProviderId::Codex, TokenCategory::Output) => 8,
+                    _ => 0,
+                };
+                component.tokens * rate
+            })
+            .sum()
     }
 }
