@@ -11,7 +11,7 @@ use crate::domain::usage::{ModelFamily, TokenRecord};
 use crate::ingest::ParsedFile;
 use crate::ingest::walker::SourceFile;
 
-pub const CLAUDE_PROVIDER: &str = "claude";
+pub const CLAUDE_PROVIDER: &str = crate::domain::provider::CLAUDE_CODE_PROVIDER;
 
 // -- Serde types for JSONL deserialization --
 

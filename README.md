@@ -38,7 +38,7 @@ tkstat --provider codex --by-model  # Codex usage by exact model id
 Daily:
 ```
 $ tkstat -d --limit 10
- claude / daily
+ claude-code / daily
                 input |    output |  cache rd |  cache cr |     total |      cost
  ---------------------+-----------+-----------+-----------+-----------+----------
  2026-03-30     1.2 K |    80.2 K |    36.8 M |     1.6 M |    38.4 M |     $84.5
@@ -59,7 +59,7 @@ $ tkstat -d --limit 10
 Hourly:
 ```
 $ tkstat -h --limit 12
- claude / hourly
+ claude-code / hourly
                 input |    output |  cache rd |  cache cr |     total |      cost
  ---------------------+-----------+-----------+-----------+-----------+----------
  2026-04-08
@@ -83,7 +83,7 @@ Top Days:
 
 ```
 $ tkstat -t 5
- claude / top days
+ claude-code / top days
                 input |    output |  cache rd |  cache cr |     total |      cost
  ---------------------+-----------+-----------+-----------+-----------+----------
  2026-04-07    14.8 K |     612 K |     150 M |     7.4 M |     158 M |      $389
@@ -105,7 +105,7 @@ tkstat --by-model           # compare exact model ids
 tkstat --by-provider        # compare providers
 tkstat --by-project         # compare projects
 tkstat --model sonnet       # only sonnet usage
-tkstat --provider claude  # only Claude Code usage
+tkstat --provider claude-code  # only Claude Code usage (`claude` is accepted as an alias)
 tkstat --provider codex        # only Codex usage
 tkstat -p myproject         # filter by project name (substring match)
 tkstat -b 2026-03-01 -e 2026-03-31   # date range
@@ -186,13 +186,13 @@ tkstat --force-update           # full re-ingest
 
 The default database location is `~/.local/share/tkstat/tkstat.db`. You can also set the `TKSTAT_DB` environment variable.
 
-Schema v7 stores provider plus exact model identity for every usage row and uses a local effective-dated pricing catalog. Because `tkstat` is pre-1.0, upgrading from an older schema rebuilds the usage cache; run `tkstat --force-update` if you need to force a clean reingest.
+Schema v8 stores provider plus exact model identity for every usage row and uses a local effective-dated pricing catalog. Provider ids are canonical storage keys (`claude-code`, `codex`); friendly CLI aliases such as `--provider claude` are normalized before querying. Because `tkstat` is pre-1.0, upgrading from an older schema rebuilds the usage cache and migrates legacy Claude pricing keys; run `tkstat --force-update` if you need to force a clean reingest.
 
 ### Provider and pricing examples
 
 ```
 tkstat --pricing-seed
-tkstat --provider claude -d
+tkstat --provider claude-code -d
 tkstat --provider codex --by-model
 tkstat --provider all --by-model --json
 tkstat --pricing-refresh

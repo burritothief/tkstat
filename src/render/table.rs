@@ -204,13 +204,25 @@ mod tests {
 
     #[test]
     fn test_render_table_has_header() {
-        let output = render_table("claude", "daily", &sample_rows(), &default_columns(), None);
-        assert!(output.contains("claude / daily"));
+        let output = render_table(
+            "claude-code",
+            "daily",
+            &sample_rows(),
+            &default_columns(),
+            None,
+        );
+        assert!(output.contains("claude-code / daily"));
     }
 
     #[test]
     fn test_render_table_has_columns() {
-        let output = render_table("claude", "daily", &sample_rows(), &default_columns(), None);
+        let output = render_table(
+            "claude-code",
+            "daily",
+            &sample_rows(),
+            &default_columns(),
+            None,
+        );
         for name in ["input", "output", "cache rd", "cache cr", "total", "cost"] {
             assert!(output.contains(name), "missing column: {name}");
         }
@@ -218,14 +230,14 @@ mod tests {
 
     #[test]
     fn test_render_table_empty() {
-        let output = render_table("claude", "daily", &[], &default_columns(), None);
+        let output = render_table("claude-code", "daily", &[], &default_columns(), None);
         assert!(output.contains("No data"));
     }
 
     #[test]
     fn test_custom_columns() {
         let cols = vec![Column::Cost, Column::Requests, Column::Sessions];
-        let output = render_table("claude", "daily", &sample_rows(), &cols, None);
+        let output = render_table("claude-code", "daily", &sample_rows(), &cols, None);
         assert!(output.contains("cost"));
         assert!(output.contains("reqs"));
         assert!(!output.contains("  input"));
@@ -262,7 +274,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let output = render_table("claude", "hourly", &rows, &default_columns(), None);
+        let output = render_table("claude-code", "hourly", &rows, &default_columns(), None);
         assert!(output.contains(" 2026-04-05\n"));
         assert!(output.contains(" 2026-04-06\n"));
     }
@@ -274,7 +286,7 @@ mod tests {
             request_count: 0,
             ..Default::default()
         }];
-        let output = render_table("claude", "hourly", &rows, &default_columns(), None);
+        let output = render_table("claude-code", "hourly", &rows, &default_columns(), None);
         let line = output.lines().find(|l| l.contains("11:00")).unwrap();
         assert!(line.contains("-"));
     }
@@ -291,7 +303,13 @@ mod tests {
 
     #[test]
     fn test_all_lines_same_width() {
-        let output = render_table("claude", "daily", &sample_rows(), &default_columns(), None);
+        let output = render_table(
+            "claude-code",
+            "daily",
+            &sample_rows(),
+            &default_columns(),
+            None,
+        );
         let data_lines: Vec<&str> = output
             .lines()
             .filter(|l| l.contains('|') || l.contains('+'))
@@ -327,7 +345,7 @@ mod tests {
             },
         ];
         let cols = vec![Column::Input, Column::Cost];
-        let output = render_table("claude", "hourly", &rows, &cols, None);
+        let output = render_table("claude-code", "hourly", &rows, &cols, None);
         let time_line = output.lines().find(|l| l.contains("10:00")).unwrap();
         // Last line with "total" is the totals row (not the column header)
         let total_line = output.lines().rev().find(|l| l.contains("total")).unwrap();
@@ -352,7 +370,7 @@ mod tests {
             ..Default::default()
         }];
         let cols = vec![Column::Input, Column::Cost];
-        let output = render_table("claude", "monthly", &rows, &cols, None);
+        let output = render_table("claude-code", "monthly", &rows, &cols, None);
         // With dynamic widths, the separator should be compact.
         // Period col = 7 ("2026-04"), input col = 5 ("input"), cost col = 5 ("$0.01").
         // Separator: " -------" + "--" + "-----" + "-+--" + "-----" = 26 chars

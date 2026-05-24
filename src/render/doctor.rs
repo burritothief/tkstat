@@ -139,7 +139,7 @@ mod tests {
                 expected_version: 7,
             },
             providers: vec![ProviderSourceInventory {
-                provider: "claude",
+                provider: "claude-code",
                 path: Some(PathBuf::from("/missing")),
                 status: SourceStatus::Missing,
                 discovered_files: None,
@@ -168,6 +168,6 @@ mod tests {
         assert!(output.contains("Providers"));
         assert!(output.contains("Pricing"));
         assert!(output.contains("Warnings"));
-        assert!(output.contains("claude source path is missing"));
+        assert!(output.contains("claude-code source path is missing"));
     }
 }

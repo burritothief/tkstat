@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 
+use crate::domain::provider::CODEX_PROVIDER;
 use crate::domain::usage::TokenRecord;
 
 /// Normalized token categories used for pricing.
@@ -14,6 +15,15 @@ pub enum TokenCategory {
 }
 
 impl TokenCategory {
+    pub const ALL: [Self; 6] = [
+        Self::Input,
+        Self::Output,
+        Self::CacheRead,
+        Self::CacheCreation,
+        Self::CachedInput,
+        Self::ReasoningOutput,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Input => "input",
@@ -25,6 +35,107 @@ impl TokenCategory {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenCountField {
+    Input,
+    Output,
+    CacheRead,
+    CacheCreation,
+    CachedInput,
+    ReasoningOutput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BillableTokenExpression {
+    Field(TokenCountField),
+    SaturatingSub(TokenCountField, TokenCountField),
+    Zero,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BillableTokenRule {
+    pub category: TokenCategory,
+    pub expression: BillableTokenExpression,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderBillingPolicy {
+    pub provider: &'static str,
+    pub rules: &'static [BillableTokenRule],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenCounts {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub reasoning_output_tokens: u64,
+}
+
+const DEFAULT_BILLING_RULES: [BillableTokenRule; 6] = [
+    BillableTokenRule {
+        category: TokenCategory::Input,
+        expression: BillableTokenExpression::Field(TokenCountField::Input),
+    },
+    BillableTokenRule {
+        category: TokenCategory::Output,
+        expression: BillableTokenExpression::Field(TokenCountField::Output),
+    },
+    BillableTokenRule {
+        category: TokenCategory::CacheRead,
+        expression: BillableTokenExpression::Field(TokenCountField::CacheRead),
+    },
+    BillableTokenRule {
+        category: TokenCategory::CacheCreation,
+        expression: BillableTokenExpression::Field(TokenCountField::CacheCreation),
+    },
+    BillableTokenRule {
+        category: TokenCategory::CachedInput,
+        expression: BillableTokenExpression::Field(TokenCountField::CachedInput),
+    },
+    BillableTokenRule {
+        category: TokenCategory::ReasoningOutput,
+        expression: BillableTokenExpression::Field(TokenCountField::ReasoningOutput),
+    },
+];
+
+const OPENAI_BILLING_RULES: [BillableTokenRule; 6] = [
+    BillableTokenRule {
+        category: TokenCategory::Input,
+        expression: BillableTokenExpression::SaturatingSub(
+            TokenCountField::Input,
+            TokenCountField::CachedInput,
+        ),
+    },
+    BillableTokenRule {
+        category: TokenCategory::Output,
+        expression: BillableTokenExpression::Field(TokenCountField::Output),
+    },
+    BillableTokenRule {
+        category: TokenCategory::CacheRead,
+        expression: BillableTokenExpression::Field(TokenCountField::CacheRead),
+    },
+    BillableTokenRule {
+        category: TokenCategory::CacheCreation,
+        expression: BillableTokenExpression::Field(TokenCountField::CacheCreation),
+    },
+    BillableTokenRule {
+        category: TokenCategory::CachedInput,
+        expression: BillableTokenExpression::Field(TokenCountField::CachedInput),
+    },
+    BillableTokenRule {
+        category: TokenCategory::ReasoningOutput,
+        expression: BillableTokenExpression::Zero,
+    },
+];
+
+const PROVIDER_BILLING_POLICIES: [ProviderBillingPolicy; 1] = [ProviderBillingPolicy {
+    provider: CODEX_PROVIDER,
+    rules: &OPENAI_BILLING_RULES,
+}];
 
 impl std::fmt::Display for TokenCategory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -88,15 +199,7 @@ impl PricingInterval {
 }
 
 pub fn nonzero_token_categories(record: &TokenRecord) -> Vec<(TokenCategory, u64)> {
-    billable_token_categories_for_counts(
-        &record.provider,
-        record.input_tokens,
-        record.output_tokens,
-        record.cache_read_tokens,
-        record.cache_creation_tokens,
-        record.cached_input_tokens,
-        record.reasoning_output_tokens,
-    )
+    billable_token_categories(&record.provider, TokenCounts::from(record))
 }
 
 pub fn billable_token_categories_for_counts(
@@ -108,37 +211,97 @@ pub fn billable_token_categories_for_counts(
     cached_input_tokens: u64,
     reasoning_output_tokens: u64,
 ) -> Vec<(TokenCategory, u64)> {
-    let input_billable = if is_openai_style_provider(provider) {
-        input_tokens.saturating_sub(cached_input_tokens)
-    } else {
-        input_tokens
-    };
-    let reasoning_billable = if is_openai_style_provider(provider) {
-        0
-    } else {
-        reasoning_output_tokens
-    };
-
-    [
-        (TokenCategory::Input, input_billable),
-        (TokenCategory::Output, output_tokens),
-        (TokenCategory::CacheRead, cache_read_tokens),
-        (TokenCategory::CacheCreation, cache_creation_tokens),
-        (TokenCategory::CachedInput, cached_input_tokens),
-        (TokenCategory::ReasoningOutput, reasoning_billable),
-    ]
-    .into_iter()
-    .filter(|(_, tokens)| *tokens > 0)
-    .collect()
+    billable_token_categories(
+        provider,
+        TokenCounts {
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+            cached_input_tokens,
+            reasoning_output_tokens,
+        },
+    )
 }
 
-fn is_openai_style_provider(provider: &str) -> bool {
-    provider == "codex"
+pub fn billable_token_categories(provider: &str, counts: TokenCounts) -> Vec<(TokenCategory, u64)> {
+    billable_token_rules(provider)
+        .iter()
+        .filter_map(|rule| {
+            let tokens = rule.expression.tokens(counts);
+            (tokens > 0).then_some((rule.category, tokens))
+        })
+        .collect()
+}
+
+pub fn default_billing_rules() -> &'static [BillableTokenRule] {
+    &DEFAULT_BILLING_RULES
+}
+
+pub fn provider_billing_policies() -> &'static [ProviderBillingPolicy] {
+    &PROVIDER_BILLING_POLICIES
+}
+
+pub fn billable_token_rules(provider: &str) -> &'static [BillableTokenRule] {
+    provider_billing_policies()
+        .iter()
+        .find(|policy| policy.provider == provider)
+        .map_or(default_billing_rules(), |policy| policy.rules)
+}
+
+pub fn billable_token_rule(
+    rules: &'static [BillableTokenRule],
+    category: TokenCategory,
+) -> BillableTokenRule {
+    rules
+        .iter()
+        .copied()
+        .find(|rule| rule.category == category)
+        .expect("every billing policy must define all token categories")
+}
+
+impl BillableTokenExpression {
+    pub fn tokens(self, counts: TokenCounts) -> u64 {
+        match self {
+            Self::Field(field) => field.tokens(counts),
+            Self::SaturatingSub(minuend, subtrahend) => minuend
+                .tokens(counts)
+                .saturating_sub(subtrahend.tokens(counts)),
+            Self::Zero => 0,
+        }
+    }
+}
+
+impl TokenCountField {
+    pub fn tokens(self, counts: TokenCounts) -> u64 {
+        match self {
+            Self::Input => counts.input_tokens,
+            Self::Output => counts.output_tokens,
+            Self::CacheRead => counts.cache_read_tokens,
+            Self::CacheCreation => counts.cache_creation_tokens,
+            Self::CachedInput => counts.cached_input_tokens,
+            Self::ReasoningOutput => counts.reasoning_output_tokens,
+        }
+    }
+}
+
+impl From<&TokenRecord> for TokenCounts {
+    fn from(record: &TokenRecord) -> Self {
+        Self {
+            input_tokens: record.input_tokens,
+            output_tokens: record.output_tokens,
+            cache_read_tokens: record.cache_read_tokens,
+            cache_creation_tokens: record.cache_creation_tokens,
+            cached_input_tokens: record.cached_input_tokens,
+            reasoning_output_tokens: record.reasoning_output_tokens,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::provider::CLAUDE_CODE_PROVIDER;
     use crate::domain::usage::{ModelFamily, TokenRecord};
 
     #[test]
@@ -162,7 +325,7 @@ mod tests {
     #[test]
     fn test_pricing_interval_cost_for_tokens() {
         let interval = PricingInterval::usd(
-            "claude",
+            CLAUDE_CODE_PROVIDER,
             "claude-opus-4-6",
             TokenCategory::Input,
             15.0,

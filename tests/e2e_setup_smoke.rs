@@ -1,0 +1,149 @@
+//! Fixture-driven black-box CLI tests.
+
+mod support;
+use support::*;
+
+use std::process::Command;
+
+#[test]
+fn test_recommended_setup_and_reset_command_sequence() {
+    let root = temp_root("recommended-sequence");
+    let projects = make_claude_corpus_fixture(&root);
+    make_codex_fixture(&root);
+    let db = root.join("tkstat.db");
+
+    let doctor = run_tkstat(
+        &root,
+        [
+            "--doctor",
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+        ],
+    );
+    assert_success(&doctor);
+    let doctor_stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(doctor_stdout.contains(&db.display().to_string()));
+    assert!(doctor_stdout.contains("claude-code: available"));
+    assert!(doctor_stdout.contains("codex: available"));
+
+    let seed = run_tkstat(
+        &root,
+        [
+            "--pricing-seed",
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+        ],
+    );
+    assert_success(&seed);
+    assert!(String::from_utf8_lossy(&seed.stdout).contains("seeded"));
+
+    let refresh = run_tkstat(
+        &root,
+        [
+            "--pricing-refresh",
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+        ],
+    );
+    assert_success(&refresh);
+    assert!(String::from_utf8_lossy(&refresh.stdout).contains("refreshed pricing catalog"));
+
+    let force = run_tkstat(
+        &root,
+        [
+            "--force-update",
+            "--provider",
+            "all",
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+            "--by-provider",
+        ],
+    );
+    assert_success(&force);
+    assert_no_pricing_coverage_error(&force);
+    assert!(String::from_utf8_lossy(&force.stderr).contains("ingested 5 new records"));
+    let force_stdout = String::from_utf8_lossy(&force.stdout);
+    assert!(force_stdout.contains("all providers / by provider"));
+    assert!(force_stdout.contains("claude"));
+    assert!(force_stdout.contains("codex"));
+
+    let daily = run_tkstat(
+        &root,
+        [
+            "--provider",
+            "all",
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+            "-d",
+            "--limit",
+            "14",
+        ],
+    );
+    assert_success(&daily);
+    assert_no_pricing_coverage_error(&daily);
+    let daily_stdout = String::from_utf8_lossy(&daily.stdout);
+    assert!(daily_stdout.contains("all providers / daily"));
+    assert!(daily_stdout.contains("2026-05-24"));
+    assert!(daily_stdout.contains("$"));
+
+    let by_model = run_tkstat(
+        &root,
+        [
+            "--provider",
+            "all",
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+            "--by-model",
+            "--limit",
+            "50",
+        ],
+    );
+    assert_success(&by_model);
+    assert_no_pricing_coverage_error(&by_model);
+    let by_model_stdout = String::from_utf8_lossy(&by_model.stdout);
+    assert!(by_model_stdout.contains("all providers / by model"));
+    assert!(by_model_stdout.contains("claude-opus-4-5-20251101"));
+    assert!(by_model_stdout.contains("claude-sonnet-4-5-20250929"));
+    assert!(by_model_stdout.contains("gpt-5.5"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn test_e2e_smoke_script_runs_with_compiled_binary() {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/e2e_smoke.sh");
+    let output = Command::new("bash")
+        .arg(script)
+        .env("TKSTAT_BIN", env!("CARGO_BIN_EXE_tkstat"))
+        .env("KEEP_TMP", "0")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("tkstat e2e smoke passed"));
+    assert!(stderr.contains("--pricing-seed"));
+    assert!(stderr.contains("--by-provider"));
+    assert!(!stdout.contains("/.claude"));
+    assert!(!stderr.contains("/.claude"));
+    assert!(!stdout.contains("/.codex"));
+    assert!(!stderr.contains("/.codex"));
+}

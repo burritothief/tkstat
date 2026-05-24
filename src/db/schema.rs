@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -30,14 +30,27 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
                 "DROP TABLE IF EXISTS token_usage; DROP TABLE IF EXISTS file_state;",
             )?;
             create_tables(conn)?;
+            migrate_provider_ids(conn)?;
             set_version(conn, SCHEMA_VERSION)?;
         }
         None => {
             create_tables(conn)?;
+            migrate_provider_ids(conn)?;
             set_version(conn, SCHEMA_VERSION)?;
         }
     }
 
+    Ok(())
+}
+
+fn migrate_provider_ids(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "UPDATE OR IGNORE pricing_intervals
+            SET provider = 'claude-code'
+          WHERE provider = 'claude';
+         DELETE FROM pricing_intervals
+          WHERE provider = 'claude';",
+    )?;
     Ok(())
 }
 
@@ -173,12 +186,61 @@ mod tests {
     }
 
     #[test]
+    fn test_old_claude_pricing_provider_id_migrates_to_claude_code() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (7);
+             CREATE TABLE token_usage (request_id TEXT PRIMARY KEY);
+             CREATE TABLE file_state (path TEXT PRIMARY KEY);
+             CREATE TABLE pricing_intervals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                token_category TEXT NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'USD',
+                rate_per_1m_tokens REAL NOT NULL,
+                effective_from TEXT NOT NULL,
+                effective_to TEXT,
+                source TEXT NOT NULL,
+                UNIQUE(provider, model_id, token_category, currency, effective_from)
+             );
+             INSERT INTO pricing_intervals
+                (provider, model_id, token_category, currency, rate_per_1m_tokens, effective_from, effective_to, source)
+             VALUES
+                ('claude', 'claude-opus-4-6', 'input', 'USD', 5.0, '2026-01-01T00:00:00Z', NULL, 'legacy'),
+                ('claude-code', 'claude-opus-4-6', 'input', 'USD', 5.0, '2026-01-01T00:00:00Z', NULL, 'canonical'),
+                ('codex', 'gpt-5.5', 'input', 'USD', 2.5, '2026-01-01T00:00:00Z', NULL, 'seed');",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let old_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pricing_intervals WHERE provider = 'claude'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let canonical_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pricing_intervals WHERE provider = 'claude-code'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_count, 0);
+        assert_eq!(canonical_count, 1);
+    }
+
+    #[test]
     fn test_generated_column_works() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
         conn.execute(
             "INSERT INTO token_usage (provider, request_id, session_id, uuid, timestamp, model_family, model_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cached_input_tokens, reasoning_output_tokens, cost_usd, project, source_file, is_subagent)
-             VALUES ('claude', 'r1', 's1', 'u1', '2026-04-07T10:00:00Z', 'opus', 'claude-opus-4-6', 100, 200, 300, 400, 0, 0, 1.5, 'test', '/test.jsonl', 0)",
+             VALUES ('claude-code', 'r1', 's1', 'u1', '2026-04-07T10:00:00Z', 'opus', 'claude-opus-4-6', 100, 200, 300, 400, 0, 0, 1.5, 'test', '/test.jsonl', 0)",
             [],
         ).unwrap();
 
@@ -238,7 +300,7 @@ mod tests {
 
         conn.execute(
             "INSERT INTO file_state (provider, path, size_bytes, mtime_secs, last_byte_offset, last_ingested_at)
-             VALUES ('claude', '/same.jsonl', 1, 1, 1, datetime('now')),
+             VALUES ('claude-code', '/same.jsonl', 1, 1, 1, datetime('now')),
                     ('codex', '/same.jsonl', 2, 2, 2, datetime('now'))",
             [],
         )

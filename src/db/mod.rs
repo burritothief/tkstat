@@ -153,10 +153,10 @@ mod tests {
     fn test_file_state_roundtrip() {
         let db = Database::open_in_memory().unwrap();
         let path = PathBuf::from("/test/file.jsonl");
-        assert!(db.get_file_state("claude", &path).unwrap().is_none());
-        db.update_file_state("claude", &path, 1024, 100000, 1024)
+        assert!(db.get_file_state("claude-code", &path).unwrap().is_none());
+        db.update_file_state("claude-code", &path, 1024, 100000, 1024)
             .unwrap();
-        let state = db.get_file_state("claude", &path).unwrap().unwrap();
+        let state = db.get_file_state("claude-code", &path).unwrap().unwrap();
         assert_eq!(state.size_bytes, 1024);
         assert_eq!(state.mtime_secs, 100000);
     }
@@ -165,11 +165,11 @@ mod tests {
     fn test_file_state_update() {
         let db = Database::open_in_memory().unwrap();
         let path = PathBuf::from("/test/file.jsonl");
-        db.update_file_state("claude", &path, 1024, 100000, 1024)
+        db.update_file_state("claude-code", &path, 1024, 100000, 1024)
             .unwrap();
-        db.update_file_state("claude", &path, 2048, 200000, 2048)
+        db.update_file_state("claude-code", &path, 2048, 200000, 2048)
             .unwrap();
-        let state = db.get_file_state("claude", &path).unwrap().unwrap();
+        let state = db.get_file_state("claude-code", &path).unwrap().unwrap();
         assert_eq!(state.size_bytes, 2048);
     }
 
@@ -177,12 +177,12 @@ mod tests {
     fn test_file_state_provider_paths_do_not_collide() {
         let db = Database::open_in_memory().unwrap();
         let path = PathBuf::from("/test/shared.jsonl");
-        db.update_file_state("claude", &path, 1024, 100000, 1024)
+        db.update_file_state("claude-code", &path, 1024, 100000, 1024)
             .unwrap();
         db.update_file_state("codex", &path, 2048, 200000, 2048)
             .unwrap();
 
-        let claude = db.get_file_state("claude", &path).unwrap().unwrap();
+        let claude = db.get_file_state("claude-code", &path).unwrap().unwrap();
         let codex = db.get_file_state("codex", &path).unwrap().unwrap();
         assert_eq!(claude.size_bytes, 1024);
         assert_eq!(codex.size_bytes, 2048);
@@ -193,14 +193,14 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let path = PathBuf::from("/test/file.jsonl");
         let err = db
-            .update_file_state("claude", &path, i64::MAX as u64 + 1, 100000, 1024)
+            .update_file_state("claude-code", &path, i64::MAX as u64 + 1, 100000, 1024)
             .unwrap_err()
             .to_string();
         assert!(err.contains("size_bytes"));
         assert!(err.contains("exceeds SQLite INTEGER range"));
 
         let err = db
-            .update_file_state("claude", &path, 1024, 100000, i64::MAX as u64 + 1)
+            .update_file_state("claude-code", &path, 1024, 100000, i64::MAX as u64 + 1)
             .unwrap_err()
             .to_string();
         assert!(err.contains("last_byte_offset"));
@@ -210,10 +210,10 @@ mod tests {
     fn test_reset_clears_data() {
         let db = Database::open_in_memory().unwrap();
         let path = PathBuf::from("/test/file.jsonl");
-        db.update_file_state("claude", &path, 1024, 100000, 1024)
+        db.update_file_state("claude-code", &path, 1024, 100000, 1024)
             .unwrap();
         db.reset().unwrap();
-        assert!(db.get_file_state("claude", &path).unwrap().is_none());
+        assert!(db.get_file_state("claude-code", &path).unwrap().is_none());
     }
 
     #[test]
