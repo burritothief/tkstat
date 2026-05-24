@@ -44,6 +44,20 @@ pub fn render_heatmap(
     daily_data: &[(String, f64)],
     metric_label: &str,
 ) -> String {
+    render_heatmap_with_today(
+        provider_label,
+        daily_data,
+        metric_label,
+        Local::now().date_naive(),
+    )
+}
+
+pub fn render_heatmap_with_today(
+    provider_label: &str,
+    daily_data: &[(String, f64)],
+    metric_label: &str,
+    today: NaiveDate,
+) -> String {
     if daily_data.is_empty() {
         return format!(" {provider_label} / heatmap ({metric_label})\n No data available.\n");
     }
@@ -59,7 +73,6 @@ pub fn render_heatmap(
         return format!(" {provider_label} / heatmap ({metric_label})\n No data available.\n");
     }
 
-    let today = Local::now().date_naive();
     let Some(start_month) = NaiveDate::from_ymd_opt(today.year() - 1, today.month(), 1) else {
         return format!(" {provider_label} / heatmap ({metric_label})\n No data available.\n");
     };
@@ -182,6 +195,19 @@ mod tests {
         let output = render_heatmap("codex", &data, "tokens");
         assert!(output.contains("codex / heatmap"));
         assert!(output.contains("Apr"));
+    }
+
+    #[test]
+    fn test_heatmap_range_can_use_report_timezone_today() {
+        let data = vec![("2024-01-10".into(), 1000.0)];
+        let output = render_heatmap_with_today(
+            "codex",
+            &data,
+            "tokens",
+            NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(),
+        );
+        assert!(output.contains("codex / heatmap"));
+        assert!(output.contains("Jan"));
     }
 
     #[test]

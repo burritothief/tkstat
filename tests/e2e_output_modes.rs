@@ -126,6 +126,88 @@ fn test_primary_report_output_modes_e2e() {
 }
 
 #[test]
+fn test_codex_local_midnight_outputs_use_same_report_local_date() {
+    let root = temp_root("codex-local-midnight");
+    make_codex_fixture(&root);
+    let db = root.join("tkstat.db");
+    let seed = run_tkstat(&root, ["--pricing-seed", "--db", db.to_str().unwrap()]);
+    assert_success(&seed);
+
+    let base = [
+        "--provider",
+        "codex",
+        "--db",
+        db.to_str().unwrap(),
+        "--no-color",
+    ];
+
+    let daily = run_tkstat(&root, base.into_iter().chain(["-d", "--limit", "10"]));
+    assert_success(&daily);
+    let daily_stdout = String::from_utf8_lossy(&daily.stdout);
+    assert!(daily_stdout.contains("codex / daily"));
+    assert!(daily_stdout.contains("2026-05-23"));
+    assert!(!daily_stdout.contains("2026-05-24"));
+
+    let json_daily = run_tkstat(
+        &root,
+        base.into_iter().chain(["--json", "-d", "--limit", "10"]),
+    );
+    assert_success(&json_daily);
+    let json = parse_stdout_json(&json_daily);
+    assert_eq!(json[0]["period"], "2026-05-23");
+
+    let csv_daily = run_tkstat(
+        &root,
+        base.into_iter().chain(["--csv", "-d", "--limit", "10"]),
+    );
+    assert_success(&csv_daily);
+    assert!(
+        String::from_utf8_lossy(&csv_daily.stdout).contains("2026-05-23,codex,"),
+        "CSV output should use the same report-local day as table and JSON"
+    );
+
+    let chart = run_tkstat(
+        &root,
+        base.into_iter()
+            .chain(["--chart", "--chart-metric", "tokens"]),
+    );
+    assert_success(&chart);
+    assert!(String::from_utf8_lossy(&chart.stdout).contains("2026-05-23"));
+
+    let heatmap = run_tkstat(
+        &root,
+        base.into_iter()
+            .chain(["--heatmap", "--chart-metric", "tokens"]),
+    );
+    assert_success(&heatmap);
+    assert!(String::from_utf8_lossy(&heatmap.stdout).contains("codex / heatmap"));
+
+    let budget_warning = run_tkstat(
+        &root,
+        base.into_iter()
+            .chain(["-d", "--limit", "10", "--daily-budget-usd", "0.000001"]),
+    );
+    assert_success(&budget_warning);
+    assert!(
+        String::from_utf8_lossy(&budget_warning.stderr).contains("daily 2026-05-23"),
+        "daily budget warning should use the same report-local day as reports"
+    );
+
+    for output in [
+        &daily,
+        &json_daily,
+        &csv_daily,
+        &chart,
+        &heatmap,
+        &budget_warning,
+    ] {
+        assert_no_pricing_coverage_error(output);
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn test_default_daily_ingests_and_reuses_database() {
     let root = temp_root("default-daily");
     let projects = make_claude_fixture(&root);
