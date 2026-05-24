@@ -57,16 +57,19 @@ impl std::str::FromStr for ModelFamily {
 /// A single deduplicated API request's token usage.
 #[derive(Debug, Clone)]
 pub struct TokenRecord {
+    pub provider: String,
     pub request_id: String,
     pub session_id: String,
     pub uuid: String,
     pub timestamp: DateTime<Utc>,
     pub model: ModelFamily,
-    pub model_raw: String,
+    pub model_id: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_creation_tokens: u64,
     pub cache_read_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub reasoning_output_tokens: u64,
     pub cost_usd: f64,
     pub project: String,
     pub source_file: String,
@@ -77,10 +80,18 @@ pub struct TokenRecord {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct AggregatedRow {
     pub period: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_creation_tokens: u64,
     pub cache_read_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub reasoning_output_tokens: u64,
     pub total_tokens: u64,
     pub cost_usd: f64,
     pub request_count: u64,
@@ -92,6 +103,9 @@ impl AggregatedRow {
     pub fn sum(rows: &[Self]) -> Self {
         let mut total = Self {
             period: "total".into(),
+            provider: None,
+            model_id: None,
+            project: None,
             ..Default::default()
         };
         for r in rows {
@@ -99,6 +113,8 @@ impl AggregatedRow {
             total.output_tokens += r.output_tokens;
             total.cache_creation_tokens += r.cache_creation_tokens;
             total.cache_read_tokens += r.cache_read_tokens;
+            total.cached_input_tokens += r.cached_input_tokens;
+            total.reasoning_output_tokens += r.reasoning_output_tokens;
             total.total_tokens += r.total_tokens;
             total.cost_usd += r.cost_usd;
             total.request_count += r.request_count;

@@ -7,6 +7,7 @@ const COL_WIDTH: usize = 8;
 
 /// Render a vnstat-style ASCII table from aggregated rows.
 pub fn render_table(
+    provider_label: &str,
     period_name: &str,
     rows: &[AggregatedRow],
     columns: &[Column],
@@ -15,16 +16,16 @@ pub fn render_table(
     if rows.is_empty() {
         return format!(
             "{}{}",
-            render::header(period_name, filter_desc),
+            render::header(provider_label, period_name, filter_desc),
             " No data available.\n"
         );
     }
 
     let total = AggregatedRow::sum(rows);
     let col_widths = compute_col_widths(columns, rows, &total);
-    let period_width = PERIOD_WIDTH;
+    let period_width = compute_period_width(rows);
 
-    let mut out = render::header(period_name, filter_desc);
+    let mut out = render::header(provider_label, period_name, filter_desc);
 
     // Header row
     out.push_str(&format!(" {:period_width$}", ""));
@@ -75,6 +76,19 @@ pub fn render_table(
         period_width,
     ));
     out
+}
+
+fn compute_period_width(rows: &[AggregatedRow]) -> usize {
+    rows.iter()
+        .map(|r| {
+            split_period_label(&r.period)
+                .map(|(_, time)| time.len())
+                .unwrap_or(r.period.len())
+        })
+        .max()
+        .unwrap_or(PERIOD_WIDTH)
+        .max(PERIOD_WIDTH)
+        .max("total".len())
 }
 
 fn compute_col_widths(
@@ -171,6 +185,7 @@ mod tests {
                 cost_usd: 0.84,
                 request_count: 5,
                 session_count: 2,
+                ..Default::default()
             },
             AggregatedRow {
                 period: "2026-04-06".into(),
@@ -182,19 +197,20 @@ mod tests {
                 cost_usd: 2.11,
                 request_count: 12,
                 session_count: 3,
+                ..Default::default()
             },
         ]
     }
 
     #[test]
     fn test_render_table_has_header() {
-        let output = render_table("daily", &sample_rows(), &default_columns(), None);
+        let output = render_table("claude", "daily", &sample_rows(), &default_columns(), None);
         assert!(output.contains("claude / daily"));
     }
 
     #[test]
     fn test_render_table_has_columns() {
-        let output = render_table("daily", &sample_rows(), &default_columns(), None);
+        let output = render_table("claude", "daily", &sample_rows(), &default_columns(), None);
         for name in ["input", "output", "cache rd", "cache cr", "total", "cost"] {
             assert!(output.contains(name), "missing column: {name}");
         }
@@ -202,17 +218,34 @@ mod tests {
 
     #[test]
     fn test_render_table_empty() {
-        let output = render_table("daily", &[], &default_columns(), None);
+        let output = render_table("claude", "daily", &[], &default_columns(), None);
         assert!(output.contains("No data"));
     }
 
     #[test]
     fn test_custom_columns() {
         let cols = vec![Column::Cost, Column::Requests, Column::Sessions];
-        let output = render_table("daily", &sample_rows(), &cols, None);
+        let output = render_table("claude", "daily", &sample_rows(), &cols, None);
         assert!(output.contains("cost"));
         assert!(output.contains("reqs"));
         assert!(!output.contains("  input"));
+    }
+
+    #[test]
+    fn test_provider_specific_token_columns_render() {
+        let rows = vec![AggregatedRow {
+            period: "codex/gpt-5.5".into(),
+            cached_input_tokens: 4480,
+            reasoning_output_tokens: 70,
+            request_count: 1,
+            ..Default::default()
+        }];
+        let cols = vec![Column::CachedInput, Column::ReasoningOutput];
+        let output = render_table("codex", "by model", &rows, &cols, None);
+        assert!(output.contains("cached in"));
+        assert!(output.contains("reason"));
+        assert!(output.contains("4.5 K"));
+        assert!(output.contains("70"));
     }
 
     #[test]
@@ -229,7 +262,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let output = render_table("hourly", &rows, &default_columns(), None);
+        let output = render_table("claude", "hourly", &rows, &default_columns(), None);
         assert!(output.contains(" 2026-04-05\n"));
         assert!(output.contains(" 2026-04-06\n"));
     }
@@ -241,7 +274,7 @@ mod tests {
             request_count: 0,
             ..Default::default()
         }];
-        let output = render_table("hourly", &rows, &default_columns(), None);
+        let output = render_table("claude", "hourly", &rows, &default_columns(), None);
         let line = output.lines().find(|l| l.contains("11:00")).unwrap();
         assert!(line.contains("-"));
     }
@@ -258,7 +291,7 @@ mod tests {
 
     #[test]
     fn test_all_lines_same_width() {
-        let output = render_table("daily", &sample_rows(), &default_columns(), None);
+        let output = render_table("claude", "daily", &sample_rows(), &default_columns(), None);
         let data_lines: Vec<&str> = output
             .lines()
             .filter(|l| l.contains('|') || l.contains('+'))
@@ -294,7 +327,7 @@ mod tests {
             },
         ];
         let cols = vec![Column::Input, Column::Cost];
-        let output = render_table("hourly", &rows, &cols, None);
+        let output = render_table("claude", "hourly", &rows, &cols, None);
         let time_line = output.lines().find(|l| l.contains("10:00")).unwrap();
         // Last line with "total" is the totals row (not the column header)
         let total_line = output.lines().rev().find(|l| l.contains("total")).unwrap();
@@ -319,7 +352,7 @@ mod tests {
             ..Default::default()
         }];
         let cols = vec![Column::Input, Column::Cost];
-        let output = render_table("monthly", &rows, &cols, None);
+        let output = render_table("claude", "monthly", &rows, &cols, None);
         // With dynamic widths, the separator should be compact.
         // Period col = 7 ("2026-04"), input col = 5 ("input"), cost col = 5 ("$0.01").
         // Separator: " -------" + "--" + "-----" + "-+--" + "-----" = 26 chars
@@ -329,5 +362,29 @@ mod tests {
             "table is wider than needed: {} chars",
             sep_line.len()
         );
+    }
+
+    #[test]
+    fn test_long_model_labels_fit_first_column() {
+        let rows = vec![AggregatedRow {
+            period: "claude/claude-sonnet-4-5-20250929".into(),
+            input_tokens: 50,
+            request_count: 1,
+            ..Default::default()
+        }];
+        let output = render_table("all providers", "by model", &rows, &[Column::Input], None);
+        assert!(output.contains("claude/claude-sonnet-4-5-20250929"));
+
+        let data_line = output
+            .lines()
+            .find(|l| l.contains("claude-sonnet-4-5-20250929"))
+            .unwrap();
+        assert!(data_line.contains("  50"));
+    }
+
+    #[test]
+    fn test_provider_label_is_rendered() {
+        let output = render_table("codex", "daily", &sample_rows(), &default_columns(), None);
+        assert!(output.contains("codex / daily"));
     }
 }

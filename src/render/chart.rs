@@ -7,12 +7,16 @@ const CHART_HEIGHT: u32 = 20;
 
 /// Render a line chart from daily data using textplots.
 /// `daily_data` is (date_string, value) pairs in chronological order.
-pub fn render_chart(daily_data: &[(String, f64)], metric_label: &str) -> String {
+pub fn render_chart(
+    provider_label: &str,
+    daily_data: &[(String, f64)],
+    metric_label: &str,
+) -> String {
     if daily_data.is_empty() {
-        return format!(" claude / chart ({metric_label})\n No data available.\n");
+        return format!(" {provider_label} / chart ({metric_label})\n No data available.\n");
     }
 
-    let mut out = format!(" claude / chart ({metric_label})\n");
+    let mut out = format!(" {provider_label} / chart ({metric_label})\n");
 
     if daily_data.len() == 1 {
         out.push_str(&format!(
@@ -150,14 +154,14 @@ mod tests {
 
     #[test]
     fn test_chart_empty() {
-        let output = render_chart(&[], "tokens");
+        let output = render_chart("all providers", &[], "tokens");
         assert!(output.contains("No data"));
     }
 
     #[test]
     fn test_chart_single_point() {
         let data = vec![("2026-04-07".into(), 1000.0)];
-        let output = render_chart(&data, "tokens");
+        let output = render_chart("all providers", &data, "tokens");
         assert!(output.contains("2026-04-07"));
     }
 
@@ -166,10 +170,10 @@ mod tests {
         let data: Vec<(String, f64)> = (1..=10)
             .map(|i| (format!("2026-04-{i:02}"), i as f64 * 100.0))
             .collect();
-        let output = render_chart(&data, "tokens");
+        let output = render_chart("all providers", &data, "tokens");
         let has_dots = output.chars().any(|c| {
             let u = c as u32;
-            u >= 0x2801 && u <= 0x28FF
+            (0x2801..=0x28FF).contains(&u)
         });
         assert!(has_dots, "Expected visible braille characters in chart");
     }
@@ -179,8 +183,8 @@ mod tests {
         let data: Vec<(String, f64)> = (1..=10)
             .map(|i| (format!("2026-04-{i:02}"), i as f64 * 100.0))
             .collect();
-        let output = render_chart(&data, "tokens");
-        assert!(output.contains("claude / chart"));
+        let output = render_chart("codex", &data, "tokens");
+        assert!(output.contains("codex / chart"));
         assert!(output.contains("avg:"));
         assert!(output.contains("max:"));
         assert!(output.contains("total:"));
@@ -195,7 +199,7 @@ mod tests {
             ("2026-04-02".into(), 2.3),
             ("2026-04-03".into(), 0.8),
         ];
-        let output = render_chart(&data, "cost");
+        let output = render_chart("all providers", &data, "cost");
         assert!(output.contains("$"));
     }
 
@@ -206,7 +210,7 @@ mod tests {
             ("2026-04-02".into(), 0.0),
             ("2026-04-03".into(), 0.0),
         ];
-        let output = render_chart(&data, "tokens");
+        let output = render_chart("claude", &data, "tokens");
         assert!(output.contains("claude / chart"));
     }
 
@@ -236,7 +240,7 @@ mod tests {
             ("2026-04-02".into(), 100.0),
             ("2026-04-03".into(), 150.0),
         ];
-        let output = render_chart(&data, "cost");
+        let output = render_chart("all providers", &data, "cost");
         // Y-axis labels should use $ formatting
         assert!(output.contains("$"), "y-axis should show $ for cost metric");
     }
@@ -246,7 +250,7 @@ mod tests {
         let data: Vec<(String, f64)> = (1..=10)
             .map(|i| (format!("2026-04-{i:02}"), i as f64 * 100.0))
             .collect();
-        let output = render_chart(&data, "tokens");
+        let output = render_chart("all providers", &data, "tokens");
         // Should not contain the numeric x-axis range like "0.0" or "9.0"
         assert!(
             !output.contains("9.0"),

@@ -39,9 +39,13 @@ fn colored_block(r: u8, g: u8, b: u8) -> String {
 }
 
 /// Render a contribution heatmap from daily data.
-pub fn render_heatmap(daily_data: &[(String, f64)], metric_label: &str) -> String {
+pub fn render_heatmap(
+    provider_label: &str,
+    daily_data: &[(String, f64)],
+    metric_label: &str,
+) -> String {
     if daily_data.is_empty() {
-        return format!(" claude / heatmap ({metric_label})\n No data available.\n");
+        return format!(" {provider_label} / heatmap ({metric_label})\n No data available.\n");
     }
 
     let mut by_date: HashMap<NaiveDate, f64> = HashMap::new();
@@ -52,12 +56,12 @@ pub fn render_heatmap(daily_data: &[(String, f64)], metric_label: &str) -> Strin
     }
 
     if by_date.is_empty() {
-        return format!(" claude / heatmap ({metric_label})\n No data available.\n");
+        return format!(" {provider_label} / heatmap ({metric_label})\n No data available.\n");
     }
 
     let today = Local::now().date_naive();
     let Some(start_month) = NaiveDate::from_ymd_opt(today.year() - 1, today.month(), 1) else {
-        return format!(" claude / heatmap ({metric_label})\n No data available.\n");
+        return format!(" {provider_label} / heatmap ({metric_label})\n No data available.\n");
     };
     let end_month = if today.month() == 12 {
         NaiveDate::from_ymd_opt(today.year() + 1, 1, 1)
@@ -65,7 +69,7 @@ pub fn render_heatmap(daily_data: &[(String, f64)], metric_label: &str) -> Strin
         NaiveDate::from_ymd_opt(today.year(), today.month() + 1, 1)
     };
     let Some(end_month) = end_month.map(|d| d - TimeDelta::days(1)) else {
-        return format!(" claude / heatmap ({metric_label})\n No data available.\n");
+        return format!(" {provider_label} / heatmap ({metric_label})\n No data available.\n");
     };
 
     let start = start_month - TimeDelta::days(start_month.weekday().num_days_from_sunday() as i64);
@@ -75,7 +79,7 @@ pub fn render_heatmap(daily_data: &[(String, f64)], metric_label: &str) -> Strin
     let log_max = if max_val > 1.0 { max_val.ln() } else { 1.0 };
 
     let label_pad = "     ";
-    let mut out = format!(" claude / heatmap ({metric_label})\n\n");
+    let mut out = format!(" {provider_label} / heatmap ({metric_label})\n\n");
 
     // Month labels
     out.push_str(label_pad);
@@ -168,15 +172,15 @@ mod tests {
 
     #[test]
     fn test_heatmap_empty() {
-        let output = render_heatmap(&[], "tokens");
+        let output = render_heatmap("all providers", &[], "tokens");
         assert!(output.contains("No data"));
     }
 
     #[test]
     fn test_heatmap_single_day() {
         let data = vec![("2026-04-07".into(), 1000.0)];
-        let output = render_heatmap(&data, "tokens");
-        assert!(output.contains("claude / heatmap"));
+        let output = render_heatmap("codex", &data, "tokens");
+        assert!(output.contains("codex / heatmap"));
         assert!(output.contains("Apr"));
     }
 
@@ -189,7 +193,7 @@ mod tests {
             ("2026-04-04".into(), 2000.0),
             ("2026-04-05".into(), 50.0),
         ];
-        let output = render_heatmap(&data, "tokens");
+        let output = render_heatmap("all providers", &data, "tokens");
         assert!(output.contains("Mon"));
         assert!(output.contains("Fri"));
         assert!(output.contains("Less"));
@@ -199,7 +203,7 @@ mod tests {
     #[test]
     fn test_heatmap_shows_mon_wed_fri_labels() {
         let data = vec![("2026-04-07".into(), 100.0)];
-        let output = render_heatmap(&data, "cost");
+        let output = render_heatmap("all providers", &data, "cost");
         assert!(output.contains("Mon"));
         assert!(output.contains("Wed"));
         assert!(output.contains("Fri"));
@@ -210,7 +214,7 @@ mod tests {
     #[test]
     fn test_heatmap_has_7_data_rows() {
         let data = vec![("2026-04-01".into(), 100.0), ("2026-04-07".into(), 200.0)];
-        let output = render_heatmap(&data, "tokens");
+        let output = render_heatmap("all providers", &data, "tokens");
         let lines: Vec<&str> = output.lines().collect();
         let first_data = lines
             .iter()
@@ -233,7 +237,7 @@ mod tests {
     #[test]
     fn test_heatmap_sunday_first_saturday_last() {
         let data = vec![("2026-04-05".into(), 100.0)];
-        let output = render_heatmap(&data, "tokens");
+        let output = render_heatmap("all providers", &data, "tokens");
         let lines: Vec<&str> = output.lines().collect();
         let mon_idx = lines.iter().position(|l| l.contains(" Mon ")).unwrap();
         assert!(mon_idx > 0);

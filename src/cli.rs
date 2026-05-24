@@ -3,6 +3,7 @@ use clap::{Parser, ValueEnum};
 
 use crate::db::query::QueryFilter;
 use crate::domain::period::TimePeriod;
+use crate::ingest::ProviderSelection;
 
 /// Metric to use for chart/heatmap rendering.
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -13,10 +14,31 @@ pub enum ChartMetric {
     Output,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ProviderArg {
+    All,
+    Claude,
+    Codex,
+}
+
+impl From<ProviderArg> for ProviderSelection {
+    fn from(value: ProviderArg) -> Self {
+        match value {
+            ProviderArg::All => Self::All,
+            ProviderArg::Claude => Self::Claude,
+            ProviderArg::Codex => Self::Codex,
+        }
+    }
+}
+
 /// Resolved output mode from CLI flags.
 pub enum OutputMode {
     Table(TimePeriod),
     TopDays,
+    ByModel,
+    ByProvider,
+    ByProject,
+    Budget,
     Summary,
     Heatmap,
     Chart,
@@ -30,7 +52,7 @@ pub enum OutputMode {
     about = "vnstat-style monitor for Claude Code token usage",
     version,
     disable_help_flag = true,
-    after_help = "Examples:\n  tkstat            Daily token usage (default)\n  tkstat -5         5-minute resolution\n  tkstat -h         Hourly statistics\n  tkstat -m         Monthly summary\n  tkstat -t 10      Top 10 days by usage\n  tkstat --model opus   Filter by model\n  tkstat --heatmap  GitHub-style usage calendar\n  tkstat --chart    Braille time-series chart\n  tkstat --json -d  Daily stats as JSON"
+    after_help = "Examples:\n  tkstat            Daily token usage (default)\n  tkstat -5         5-minute resolution\n  tkstat -h         Hourly statistics\n  tkstat -m         Monthly summary\n  tkstat -t 10      Top 10 days by usage\n  tkstat --model opus   Filter by model family alias\n  tkstat --model claude-sonnet-4-5-20250929   Filter by exact model id\n  tkstat --by-model     Group by exact model id\n  tkstat --by-provider  Group by provider\n  tkstat --by-project   Group by project\n  tkstat --budget       Budget consumption\n  tkstat --heatmap  GitHub-style usage calendar\n  tkstat --chart    Braille time-series chart\n  tkstat --json -d  Daily stats as JSON"
 )]
 pub struct Cli {
     /// Print help
@@ -66,6 +88,10 @@ pub struct Cli {
     #[arg(short = 's', long = "summary")]
     pub summary: bool,
 
+    /// Show budget consumption report
+    #[arg(long = "budget")]
+    pub budget: bool,
+
     // -- Chart modes --
     /// Show GitHub-style contribution heatmap
     #[arg(long = "heatmap")]
@@ -85,9 +111,34 @@ pub struct Cli {
     pub chart_metric: ChartMetric,
 
     // -- Filters --
-    /// Filter by model family (opus, sonnet, haiku)
+    /// Filter by exact model id, or family alias (opus, sonnet, haiku)
     #[arg(long = "model", value_name = "MODEL")]
     pub model: Option<String>,
+
+    /// Ingest/query provider (all, claude, codex)
+    #[arg(
+        long = "provider",
+        value_name = "PROVIDER",
+        value_enum,
+        default_value = "all"
+    )]
+    pub provider: ProviderArg,
+
+    /// Filter by model family (opus, sonnet, haiku)
+    #[arg(long = "model-family", value_name = "FAMILY")]
+    pub model_family: Option<String>,
+
+    /// Group usage by exact model id
+    #[arg(long = "by-model")]
+    pub by_model: bool,
+
+    /// Group usage by provider
+    #[arg(long = "by-provider")]
+    pub by_provider: bool,
+
+    /// Group usage by project
+    #[arg(long = "by-project")]
+    pub by_project: bool,
 
     /// Filter by project name (substring match)
     #[arg(short = 'p', long = "project", value_name = "PROJECT")]
@@ -97,11 +148,11 @@ pub struct Cli {
     #[arg(long = "session", value_name = "SESSION_ID")]
     pub session: Option<String>,
 
-    /// Begin date for filtering (YYYY-MM-DD)
+    /// Begin UTC date for filtering (YYYY-MM-DD)
     #[arg(short = 'b', long = "begin", value_name = "DATE")]
     pub begin: Option<NaiveDate>,
 
-    /// End date for filtering (YYYY-MM-DD)
+    /// End UTC date for filtering (YYYY-MM-DD)
     #[arg(short = 'e', long = "end", value_name = "DATE")]
     pub end: Option<NaiveDate>,
 
@@ -118,7 +169,33 @@ pub struct Cli {
     #[arg(long = "oneline")]
     pub oneline: bool,
 
-    /// Columns to display (comma-separated: input,output,cache_rd,cache_cr,total,cost,reqs,sessions)
+    /// Output table-shaped reports as CSV
+    #[arg(
+        long = "csv",
+        conflicts_with_all = [
+            "json",
+            "oneline",
+            "chart",
+            "heatmap",
+            "summary",
+            "doctor",
+            "budget",
+            "pricing_seed",
+            "pricing_refresh",
+            "pricing_audit"
+        ]
+    )]
+    pub csv: bool,
+
+    /// Inspect tkstat runtime state without ingesting or refreshing
+    #[arg(long = "doctor")]
+    pub doctor: bool,
+
+    /// Audit local pricing coverage without ingesting or refreshing
+    #[arg(long = "pricing-audit")]
+    pub pricing_audit: bool,
+
+    /// Columns to display (comma-separated: input,output,cache_rd,cache_cr,cached_input,reasoning_output,total,cost,reqs,sessions)
     #[arg(long = "columns", value_name = "COLS")]
     pub columns: Option<String>,
 
@@ -139,12 +216,36 @@ pub struct Cli {
     #[arg(long = "data-dir", value_name = "PATH")]
     pub data_dir: Option<String>,
 
+    /// Seed bundled pricing intervals into the local database and exit
+    #[arg(long = "pricing-seed")]
+    pub pricing_seed: bool,
+
+    /// Refresh pricing intervals from the configured pricing source and exit
+    #[arg(long = "pricing-refresh")]
+    pub pricing_refresh: bool,
+
     /// Exclude subagent usage
     #[arg(long = "no-subagents")]
     pub no_subagents: bool,
+
+    /// Warn when any daily filtered cost reaches this USD threshold
+    #[arg(long = "daily-budget-usd", value_name = "AMOUNT")]
+    pub daily_budget_usd: Option<f64>,
+
+    /// Warn when any monthly filtered cost reaches this USD threshold
+    #[arg(long = "monthly-budget-usd", value_name = "AMOUNT")]
+    pub monthly_budget_usd: Option<f64>,
 }
 
 impl Cli {
+    pub fn provider_label(&self) -> &'static str {
+        match self.provider {
+            ProviderArg::All => "all providers",
+            ProviderArg::Claude => "claude",
+            ProviderArg::Codex => "codex",
+        }
+    }
+
     /// Resolve the time period from CLI flags.
     pub fn period(&self) -> TimePeriod {
         if self.fiveminutes {
@@ -163,7 +264,15 @@ impl Cli {
     /// Resolve the output mode from CLI flags.
     pub fn output_mode(&self) -> OutputMode {
         let period = self.period();
-        if self.heatmap {
+        if self.budget {
+            OutputMode::Budget
+        } else if self.by_project {
+            OutputMode::ByProject
+        } else if self.by_provider {
+            OutputMode::ByProvider
+        } else if self.by_model {
+            OutputMode::ByModel
+        } else if self.heatmap {
             OutputMode::Heatmap
         } else if self.chart {
             OutputMode::Chart
@@ -200,13 +309,124 @@ impl Cli {
 
     /// Build a query filter from CLI flags.
     pub fn query_filter(&self) -> QueryFilter {
+        let provider = match self.provider {
+            ProviderArg::All => None,
+            ProviderArg::Claude => Some("claude".to_string()),
+            ProviderArg::Codex => Some("codex".to_string()),
+        };
         QueryFilter {
             begin: self.begin,
             end: self.end,
+            provider,
             model: self.model.clone(),
+            model_family: self.model_family.clone(),
             project: self.project.clone(),
             session: self.session.clone(),
             include_subagents: !self.no_subagents,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn test_by_model_flag_selects_model_report() {
+        let cli = Cli::parse_from(["tkstat", "--by-model"]);
+        assert!(matches!(cli.output_mode(), OutputMode::ByModel));
+    }
+
+    #[test]
+    fn test_by_provider_flag_selects_provider_report() {
+        let cli = Cli::parse_from(["tkstat", "--by-provider"]);
+        assert!(matches!(cli.output_mode(), OutputMode::ByProvider));
+    }
+
+    #[test]
+    fn test_by_project_flag_selects_project_report() {
+        let cli = Cli::parse_from(["tkstat", "--by-project"]);
+        assert!(matches!(cli.output_mode(), OutputMode::ByProject));
+    }
+
+    #[test]
+    fn test_budget_flag_selects_budget_report() {
+        let cli = Cli::parse_from(["tkstat", "--budget"]);
+        assert!(matches!(cli.output_mode(), OutputMode::Budget));
+    }
+
+    #[test]
+    fn test_model_and_model_family_flags_populate_filter() {
+        let cli = Cli::parse_from([
+            "tkstat",
+            "--model",
+            "claude-sonnet-4-5-20250929",
+            "--model-family",
+            "sonnet",
+        ]);
+        let filter = cli.query_filter();
+        assert_eq!(filter.model.as_deref(), Some("claude-sonnet-4-5-20250929"));
+        assert_eq!(filter.model_family.as_deref(), Some("sonnet"));
+    }
+
+    #[test]
+    fn test_provider_flag_parses_codex() {
+        let cli = Cli::parse_from(["tkstat", "--provider", "codex"]);
+        assert!(matches!(cli.provider.into(), ProviderSelection::Codex));
+        assert_eq!(cli.query_filter().provider.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn test_help_mentions_model_report_flags() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(help.contains("--by-model"));
+        assert!(help.contains("--by-provider"));
+        assert!(help.contains("--by-project"));
+        assert!(help.contains("--model-family"));
+        assert!(help.contains("--provider"));
+        assert!(help.contains("--pricing-seed"));
+        assert!(help.contains("--pricing-refresh"));
+        assert!(help.contains("--pricing-audit"));
+        assert!(help.contains("--doctor"));
+        assert!(help.contains("--csv"));
+        assert!(help.contains("--daily-budget-usd"));
+        assert!(help.contains("--monthly-budget-usd"));
+        assert!(help.contains("--budget"));
+        assert!(help.contains("exact model id"));
+    }
+
+    #[test]
+    fn test_csv_conflicts_with_json_and_oneline() {
+        assert!(Cli::try_parse_from(["tkstat", "--csv", "--json"]).is_err());
+        assert!(Cli::try_parse_from(["tkstat", "--csv", "--oneline"]).is_err());
+    }
+
+    #[test]
+    fn test_csv_conflicts_with_non_table_modes() {
+        for flag in [
+            "--chart",
+            "--heatmap",
+            "--summary",
+            "--doctor",
+            "--budget",
+            "--pricing-seed",
+            "--pricing-refresh",
+            "--pricing-audit",
+        ] {
+            assert!(
+                Cli::try_parse_from(["tkstat", "--csv", flag]).is_err(),
+                "--csv should conflict with {flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_csv_remains_available_for_table_modes() {
+        assert!(Cli::try_parse_from(["tkstat", "--csv", "-d"]).is_ok());
+        assert!(Cli::try_parse_from(["tkstat", "--csv", "-t", "5"]).is_ok());
+        assert!(Cli::try_parse_from(["tkstat", "--csv", "--by-model"]).is_ok());
+        assert!(Cli::try_parse_from(["tkstat", "--csv", "--by-provider"]).is_ok());
+        assert!(Cli::try_parse_from(["tkstat", "--csv", "--by-project"]).is_ok());
     }
 }

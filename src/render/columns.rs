@@ -7,6 +7,8 @@ pub enum Column {
     Output,
     CacheRead,
     CacheCreation,
+    CachedInput,
+    ReasoningOutput,
     Total,
     Cost,
     Requests,
@@ -22,6 +24,8 @@ impl std::str::FromStr for Column {
             "output" | "out" => Ok(Self::Output),
             "cache_rd" | "crd" | "cacherd" | "cache_read" => Ok(Self::CacheRead),
             "cache_cr" | "ccr" | "cachecr" | "cache_creation" => Ok(Self::CacheCreation),
+            "cached_input" | "cached_in" | "cin" | "cached" => Ok(Self::CachedInput),
+            "reasoning_output" | "reasoning" | "reason" | "rout" => Ok(Self::ReasoningOutput),
             "total" | "tot" => Ok(Self::Total),
             "cost" => Ok(Self::Cost),
             "reqs" | "requests" | "req" => Ok(Self::Requests),
@@ -42,6 +46,8 @@ impl Column {
             Self::Output => "output",
             Self::CacheRead => "cache rd",
             Self::CacheCreation => "cache cr",
+            Self::CachedInput => "cached in",
+            Self::ReasoningOutput => "reason",
             Self::Total => "total",
             Self::Cost => "cost",
             Self::Requests => "reqs",
@@ -56,6 +62,8 @@ impl Column {
             Self::Output => format_tokens(row.output_tokens),
             Self::CacheRead => format_tokens(row.cache_read_tokens),
             Self::CacheCreation => format_tokens(row.cache_creation_tokens),
+            Self::CachedInput => format_tokens(row.cached_input_tokens),
+            Self::ReasoningOutput => format_tokens(row.reasoning_output_tokens),
             Self::Total => format_tokens(row.total_tokens),
             Self::Cost => format_cost(row.cost_usd),
             Self::Requests => row.request_count.to_string(),
@@ -65,7 +73,7 @@ impl Column {
 
     /// All available column names for help text.
     pub fn available_names() -> &'static str {
-        "input, output, cache_rd, cache_cr, total, cost, reqs, sessions"
+        "input, output, cache_rd, cache_cr, cached_input, reasoning_output, total, cost, reqs, sessions"
     }
 }
 
@@ -109,8 +117,10 @@ mod tests {
 
     #[test]
     fn test_parse_columns_aliases() {
-        let cols = parse_columns("in,out,crd,ccr,tot,reqs,sess").unwrap();
-        assert_eq!(cols.len(), 7);
+        let cols = parse_columns("in,out,crd,ccr,cached,reason,tot,reqs,sess").unwrap();
+        assert_eq!(cols.len(), 9);
+        assert!(cols.contains(&Column::CachedInput));
+        assert!(cols.contains(&Column::ReasoningOutput));
     }
 
     #[test]
@@ -153,11 +163,15 @@ mod tests {
     fn test_column_format_value() {
         let row = AggregatedRow {
             input_tokens: 1500,
+            cached_input_tokens: 400,
+            reasoning_output_tokens: 70,
             request_count: 42,
             cost_usd: 1.23,
             ..Default::default()
         };
         assert_eq!(Column::Input.format_value(&row), "1.5 K");
+        assert_eq!(Column::CachedInput.format_value(&row), "400");
+        assert_eq!(Column::ReasoningOutput.format_value(&row), "70");
         assert_eq!(Column::Requests.format_value(&row), "42");
         assert_eq!(Column::Cost.format_value(&row), "$1.23");
     }

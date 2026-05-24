@@ -11,16 +11,16 @@ pub enum TimePeriod {
 }
 
 impl TimePeriod {
-    /// SQL expression to bucket timestamps into this period.
-    pub fn sql_group_expr(&self) -> &'static str {
+    /// SQL expression to bucket UTC timestamps into this period.
+    pub fn sql_utc_group_expr(&self) -> &'static str {
         match self {
             Self::FiveMinutes => {
-                "strftime('%Y-%m-%d %H:', timestamp, 'localtime') || printf('%02d', (cast(strftime('%M', timestamp, 'localtime') as integer) / 5) * 5)"
+                "strftime('%Y-%m-%d %H:', timestamp) || printf('%02d', (cast(strftime('%M', timestamp) as integer) / 5) * 5)"
             }
-            Self::Hourly => "strftime('%Y-%m-%d %H:00', timestamp, 'localtime')",
-            Self::Daily => "date(timestamp, 'localtime')",
-            Self::Monthly => "strftime('%Y-%m', timestamp, 'localtime')",
-            Self::Yearly => "strftime('%Y', timestamp, 'localtime')",
+            Self::Hourly => "strftime('%Y-%m-%d %H:00', timestamp)",
+            Self::Daily => "date(timestamp)",
+            Self::Monthly => "strftime('%Y-%m', timestamp)",
+            Self::Yearly => "strftime('%Y', timestamp)",
         }
     }
 
@@ -71,7 +71,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sql_group_expr_not_empty() {
+    fn test_sql_utc_group_expr_not_empty() {
         for period in [
             TimePeriod::FiveMinutes,
             TimePeriod::Hourly,
@@ -79,7 +79,7 @@ mod tests {
             TimePeriod::Monthly,
             TimePeriod::Yearly,
         ] {
-            assert!(!period.sql_group_expr().is_empty());
+            assert!(!period.sql_utc_group_expr().is_empty());
         }
     }
 }

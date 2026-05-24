@@ -8,7 +8,10 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::domain::usage::{ModelFamily, TokenRecord};
+use crate::ingest::ParsedFile;
 use crate::ingest::walker::SourceFile;
+
+pub const CLAUDE_PROVIDER: &str = "claude";
 
 // -- Serde types for JSONL deserialization --
 
@@ -42,15 +45,9 @@ struct JsonlUsage {
     output_tokens: u64,
 }
 
-const ASSISTANT_TYPE_MARKER: &[u8] = b"\"type\":\"assistant\"";
-
 /// Parse a JSONL file starting at the given byte offset.
 /// Returns deduplicated TokenRecords (one per request_id, keeping max output_tokens).
-pub fn parse_jsonl_file(
-    path: &Path,
-    offset: u64,
-    file_info: &SourceFile,
-) -> Result<Vec<TokenRecord>> {
+pub fn parse_jsonl_file(path: &Path, offset: u64, file_info: &SourceFile) -> Result<ParsedFile> {
     let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
 
     if offset > 0 {
@@ -60,25 +57,78 @@ pub fn parse_jsonl_file(
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)?;
 
-    Ok(parse_jsonl_bytes(&buf, file_info))
+    let parsed = parse_jsonl_bytes_incremental(&buf, file_info);
+    Ok(ParsedFile {
+        safe_byte_offset: offset + parsed.safe_byte_offset,
+        records: parsed.records,
+        parse_errors: parsed.parse_errors,
+    })
 }
 
 /// Parse raw JSONL bytes into deduplicated TokenRecords.
 pub fn parse_jsonl_bytes(bytes: &[u8], file_info: &SourceFile) -> Vec<TokenRecord> {
+    parse_jsonl_lines(bytes.split(|&b| b == b'\n'), file_info)
+}
+
+/// Parse raw JSONL bytes that may end with an incomplete trailing line.
+pub fn parse_jsonl_bytes_incremental(bytes: &[u8], file_info: &SourceFile) -> ParsedFile {
+    let safe_len = safe_jsonl_prefix_len(bytes);
+    let parsed = parse_jsonl_lines_with_errors(bytes[..safe_len].split(|&b| b == b'\n'), file_info);
+    ParsedFile {
+        records: parsed.records,
+        safe_byte_offset: safe_len as u64,
+        parse_errors: parsed.parse_errors,
+    }
+}
+
+fn complete_jsonl_prefix_len(bytes: &[u8]) -> usize {
+    bytes
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |pos| pos + 1)
+}
+
+fn safe_jsonl_prefix_len(bytes: &[u8]) -> usize {
+    let newline_safe_len = complete_jsonl_prefix_len(bytes);
+    if newline_safe_len < bytes.len()
+        && serde_json::from_slice::<JsonlEntry>(&bytes[newline_safe_len..]).is_ok()
+    {
+        bytes.len()
+    } else {
+        newline_safe_len
+    }
+}
+
+fn parse_jsonl_lines<'a>(
+    lines: impl IntoIterator<Item = &'a [u8]>,
+    file_info: &SourceFile,
+) -> Vec<TokenRecord> {
+    parse_jsonl_lines_with_errors(lines, file_info).records
+}
+
+struct ParsedLines {
+    records: Vec<TokenRecord>,
+    parse_errors: u64,
+}
+
+fn parse_jsonl_lines_with_errors<'a>(
+    lines: impl IntoIterator<Item = &'a [u8]>,
+    file_info: &SourceFile,
+) -> ParsedLines {
     let mut seen: HashMap<String, TokenRecord> = HashMap::new();
+    let mut parse_errors = 0;
 
-    for line in bytes.split(|&b| b == b'\n') {
+    for line in lines {
         if line.is_empty() {
-            continue;
-        }
-
-        if memchr::memmem::find(line, ASSISTANT_TYPE_MARKER).is_none() {
             continue;
         }
 
         let entry: JsonlEntry = match serde_json::from_slice(line) {
             Ok(e) => e,
-            Err(_) => continue,
+            Err(_) => {
+                parse_errors += 1;
+                continue;
+            }
         };
 
         if entry.entry_type != "assistant" {
@@ -102,16 +152,19 @@ pub fn parse_jsonl_bytes(bytes: &[u8], file_info: &SourceFile) -> Vec<TokenRecor
         };
 
         let record = TokenRecord {
+            provider: CLAUDE_PROVIDER.into(),
             request_id: request_id.clone(),
             session_id: entry.session_id.unwrap_or_default(),
             uuid: entry.uuid.unwrap_or_default(),
             timestamp,
             model: ModelFamily::classify(&model_str),
-            model_raw: model_str,
+            model_id: model_str,
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
             cache_creation_tokens: usage.cache_creation_input_tokens,
             cache_read_tokens: usage.cache_read_input_tokens,
+            cached_input_tokens: 0,
+            reasoning_output_tokens: 0,
             cost_usd: 0.0,
             project: file_info.project_name.clone(),
             source_file: file_info.path.to_string_lossy().to_string(),
@@ -127,7 +180,10 @@ pub fn parse_jsonl_bytes(bytes: &[u8], file_info: &SourceFile) -> Vec<TokenRecor
             .or_insert(record);
     }
 
-    seen.into_values().collect()
+    ParsedLines {
+        records: seen.into_values().collect(),
+        parse_errors,
+    }
 }
 
 #[cfg(test)]
@@ -157,8 +213,10 @@ mod tests {
         let records = parse_jsonl_bytes(line.as_bytes(), &make_source_file());
         assert_eq!(records.len(), 1);
         let r = &records[0];
+        assert_eq!(r.provider, CLAUDE_PROVIDER);
         assert_eq!(r.request_id, "req1");
         assert_eq!(r.model, ModelFamily::Opus);
+        assert_eq!(r.model_id, "claude-opus-4-6");
         assert_eq!(r.input_tokens, 10);
         assert_eq!(r.output_tokens, 42);
         assert_eq!(r.cache_creation_tokens, 100);
@@ -180,9 +238,7 @@ mod tests {
 
     #[test]
     fn test_skips_non_assistant_lines() {
-        let mut all = format!(
-            r#"{{"type":"user","message":{{"role":"user"}},"uuid":"u1","timestamp":"2026-04-07T10:00:00Z","sessionId":"s1"}}"#
-        );
+        let mut all = r#"{"type":"user","message":{"role":"user"},"uuid":"u1","timestamp":"2026-04-07T10:00:00Z","sessionId":"s1"}"#.to_string();
         all.push('\n');
         all.push_str(&assistant_line("req1", "claude-sonnet-4-6", 20));
         let records = parse_jsonl_bytes(all.as_bytes(), &make_source_file());
@@ -255,5 +311,61 @@ mod tests {
         let records = parse_jsonl_bytes(line.as_bytes(), &fi);
         assert_eq!(records[0].project, "coolproj");
         assert!(records[0].is_subagent);
+    }
+
+    #[test]
+    fn test_preserves_exact_model_id_separately_from_family() {
+        let line = assistant_line("req1", "claude-sonnet-4-5-20250929", 10);
+        let records = parse_jsonl_bytes(line.as_bytes(), &make_source_file());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].model, ModelFamily::Sonnet);
+        assert_eq!(records[0].model_id, "claude-sonnet-4-5-20250929");
+    }
+
+    #[test]
+    fn test_accepts_assistant_type_with_whitespace() {
+        let line = r#"{"type": "assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":10,"output_tokens":5}},"requestId":"req1","uuid":"u1","timestamp":"2026-04-07T10:00:00Z","sessionId":"s1"}"#;
+        let records = parse_jsonl_bytes(line.as_bytes(), &make_source_file());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].request_id, "req1");
+    }
+
+    #[test]
+    fn test_accepts_assistant_type_after_message() {
+        let line = r#"{"message":{"model":"claude-opus-4-6","usage":{"input_tokens":10,"output_tokens":5}},"requestId":"req1","uuid":"u1","timestamp":"2026-04-07T10:00:00Z","sessionId":"s1","type":"assistant","extra":{"ignored":true}}"#;
+        let records = parse_jsonl_bytes(line.as_bytes(), &make_source_file());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].model_id, "claude-opus-4-6");
+    }
+
+    #[test]
+    fn test_mixed_file_keeps_all_valid_assistant_json_formats() {
+        let compact = assistant_line("req1", "claude-sonnet-4-5-20250929", 10);
+        let spaced = r#"{"type": "assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":10,"output_tokens":5}},"requestId":"req2","uuid":"u2","timestamp":"2026-04-07T10:00:00Z","sessionId":"s1"}"#;
+        let reordered = r#"{"message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":10,"output_tokens":7}},"requestId":"req3","uuid":"u3","timestamp":"2026-04-07T10:00:00Z","sessionId":"s1","type":"assistant"}"#;
+        let user = r#"{"type": "user","message":{"role":"user"},"uuid":"u4","timestamp":"2026-04-07T10:00:00Z","sessionId":"s1"}"#;
+        let lines = format!("not json\n{compact}\n{spaced}\n{user}\n{reordered}\n");
+        let records = parse_jsonl_bytes(lines.as_bytes(), &make_source_file());
+        assert_eq!(records.len(), 3);
+    }
+
+    #[test]
+    fn test_incremental_parse_preserves_trailing_fragment() {
+        let complete = assistant_line("req1", "claude-sonnet-4-5-20250929", 10);
+        let fragment = r#"{"type":"assistant","message":{"#;
+        let bytes = format!("{complete}\n{fragment}");
+        let parsed = parse_jsonl_bytes_incremental(bytes.as_bytes(), &make_source_file());
+        assert_eq!(parsed.records.len(), 1);
+        assert_eq!(parsed.records[0].request_id, "req1");
+        assert_eq!(parsed.safe_byte_offset, complete.len() as u64 + 1);
+    }
+
+    #[test]
+    fn test_incremental_parse_accepts_valid_final_line_without_newline() {
+        let line = assistant_line("req1", "claude-sonnet-4-5-20250929", 10);
+        let parsed = parse_jsonl_bytes_incremental(line.as_bytes(), &make_source_file());
+        assert_eq!(parsed.records.len(), 1);
+        assert_eq!(parsed.records[0].request_id, "req1");
+        assert_eq!(parsed.safe_byte_offset, line.len() as u64);
     }
 }
