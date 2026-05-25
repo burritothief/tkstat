@@ -6,7 +6,7 @@ use crate::domain::provider::ProviderId;
 use crate::domain::timestamp::parse_canonical_utc_rfc3339;
 use crate::domain::usage::{ModelFamily, TokenRecord};
 
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 14;
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -350,7 +350,15 @@ fn normalize_default_claude_billing_component_dimensions(conn: &Connection) -> R
             SET speed = NULL
           WHERE provider = 'claude-code'
             AND speed IS NOT NULL
-            AND lower(trim(speed)) = 'standard';",
+            AND lower(trim(speed)) IN ('standard', 'fast');
+         UPDATE usage_billing_components
+            SET region = NULL
+          WHERE provider = 'claude-code'
+            AND region IS NOT NULL
+            AND (
+                trim(region) = ''
+                OR lower(trim(region)) IN ('not_available', 'global')
+            );",
     )?;
     Ok(())
 }
@@ -1005,6 +1013,15 @@ mod tests {
                 (2, 'claude-code', 'fast', 'claude-haiku-4-5-20251001',
                  '2026-04-07T10:00:00+00:00', 'cache_read', 100,
                  'standard', 'fast', NULL, NULL, NULL, 0),
+                (3, 'claude-code', 'not-available-region', 'claude-haiku-4-5-20251001',
+                 '2026-04-07T10:00:00+00:00', 'output', 100,
+                 NULL, NULL, 'not_available', NULL, NULL, 0),
+                (4, 'claude-code', 'global-region', 'claude-haiku-4-5-20251001',
+                 '2026-04-07T10:00:00+00:00', 'cache_read', 100,
+                 NULL, NULL, 'global', NULL, NULL, 0),
+                (5, 'claude-code', 'us-region', 'claude-haiku-4-5-20251001',
+                 '2026-04-07T10:00:00+00:00', 'cache_read', 100,
+                 NULL, NULL, 'us', NULL, NULL, 0),
                 (3, 'codex', 'codex-standard', 'gpt-5.4',
                  '2026-04-07T10:00:00+00:00', 'input', 100,
                  NULL, NULL, NULL, 'standard', NULL, 0);",
@@ -1038,7 +1055,30 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!(fast, (None, Some("fast".into())));
+        assert_eq!(fast, (None, None));
+
+        let placeholder_region_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM usage_billing_components
+                 WHERE request_id IN ('not-available-region', 'global-region')
+                   AND region IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(placeholder_region_count, 2);
+
+        let us_region: Option<String> = conn
+            .query_row(
+                "SELECT region
+                 FROM usage_billing_components
+                 WHERE request_id = 'us-region'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(us_region.as_deref(), Some("us"));
 
         let codex_mode: Option<String> = conn
             .query_row(

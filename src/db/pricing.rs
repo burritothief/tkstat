@@ -2582,7 +2582,7 @@ mod tests {
             db.conn(),
             &with_speed(
                 interval(TokenCategory::Input, 20.0, "2026-01-01T00:00:00Z", None),
-                "fast",
+                "turbo",
             ),
         )
         .unwrap();
@@ -2613,6 +2613,23 @@ mod tests {
         .unwrap();
         assert_eq!(standard.rate_per_1m_tokens, 10.0);
 
+        for region in ["not_available", "global"] {
+            let region_placeholder = PricingDimensions {
+                region: Some(region.into()),
+                ..Default::default()
+            };
+            let selected = applicable_interval_for_dimensions(
+                db.conn(),
+                ProviderId::ClaudeCode,
+                "claude-opus-4-6",
+                TokenCategory::Input,
+                "2026-04-07T10:00:00Z".parse().unwrap(),
+                &region_placeholder,
+            )
+            .unwrap();
+            assert_eq!(selected.rate_per_1m_tokens, 10.0);
+        }
+
         let fast_dimensions = PricingDimensions {
             speed: Some("fast".into()),
             ..Default::default()
@@ -2626,7 +2643,22 @@ mod tests {
             &fast_dimensions,
         )
         .unwrap();
-        assert_eq!(fast.rate_per_1m_tokens, 20.0);
+        assert_eq!(fast.rate_per_1m_tokens, 10.0);
+
+        let turbo_dimensions = PricingDimensions {
+            speed: Some("turbo".into()),
+            ..Default::default()
+        };
+        let turbo = applicable_interval_for_dimensions(
+            db.conn(),
+            ProviderId::ClaudeCode,
+            "claude-opus-4-6",
+            TokenCategory::Input,
+            "2026-04-07T10:00:00Z".parse().unwrap(),
+            &turbo_dimensions,
+        )
+        .unwrap();
+        assert_eq!(turbo.rate_per_1m_tokens, 20.0);
 
         let priority_dimensions = PricingDimensions {
             speed: Some("priority".into()),
@@ -2676,7 +2708,7 @@ mod tests {
     }
 
     #[test]
-    fn test_claude_non_default_speed_still_requires_specialized_pricing() {
+    fn test_claude_unsupported_speed_still_requires_specialized_pricing() {
         let db = Database::open_in_memory().unwrap();
         insert_interval(
             db.conn(),
@@ -2698,13 +2730,13 @@ mod tests {
         usage.cache_creation_tokens = 0;
         usage.cache_read_tokens = 1_000_000;
         usage.service_tier = Some("standard".into());
-        usage.speed = Some("fast".into());
+        usage.speed = Some("turbo".into());
 
         let err = calculate_record_cost(db.conn(), &usage)
             .unwrap_err()
             .to_string();
         assert!(err.contains("missing price"));
-        assert!(err.contains("speed=fast"));
+        assert!(err.contains("speed=turbo"));
 
         insert_interval(
             db.conn(),
@@ -2717,7 +2749,7 @@ mod tests {
                     "2026-01-01T00:00:00Z".parse().unwrap(),
                     "test",
                 ),
-                "fast",
+                "turbo",
             ),
         )
         .unwrap();
@@ -2937,7 +2969,7 @@ mod tests {
     }
 
     #[test]
-    fn test_calculate_claude_cost_requires_speed_specific_price() {
+    fn test_calculate_claude_cost_requires_unsupported_speed_specific_price() {
         let db = Database::open_in_memory().unwrap();
         insert_interval(
             db.conn(),
@@ -2947,12 +2979,12 @@ mod tests {
 
         let mut usage = record("claude-opus-4-6");
         usage.output_tokens = 0;
-        usage.speed = Some("fast".into());
+        usage.speed = Some("turbo".into());
 
         let err = calculate_record_cost(db.conn(), &usage)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("speed=fast"));
+        assert!(err.contains("speed=turbo"));
     }
 
     #[test]
@@ -3273,7 +3305,7 @@ mod tests {
                     "2026-01-01T00:00:00Z",
                     Some("2026-02-01T00:00:00Z"),
                 ),
-                "fast",
+                "turbo",
             ),
         )
         .unwrap();
@@ -3281,14 +3313,14 @@ mod tests {
             db.conn(),
             &with_speed(
                 interval(TokenCategory::Input, 30.0, "2026-03-01T00:00:00Z", None),
-                "fast",
+                "turbo",
             ),
         )
         .unwrap();
 
         let findings = audit_pricing(db.conn()).unwrap();
         assert!(findings.iter().any(|finding| {
-            finding.kind == PricingAuditKind::Gap && finding.remediation.contains("speed=fast")
+            finding.kind == PricingAuditKind::Gap && finding.remediation.contains("speed=turbo")
         }));
         assert!(!findings.iter().any(|finding| {
             finding.kind == PricingAuditKind::DuplicateCurrent
@@ -3616,7 +3648,7 @@ mod tests {
         .unwrap();
         let mut usage = record("claude-opus-4-6");
         usage.output_tokens = 0;
-        usage.speed = Some("fast".into());
+        usage.speed = Some("turbo".into());
         db.insert_records(&[usage]).unwrap();
 
         let findings = audit_pricing(db.conn()).unwrap();
@@ -3625,7 +3657,7 @@ mod tests {
                 && finding.provider == "claude-code"
                 && finding.model_id == "claude-opus-4-6"
                 && finding.token_category == "input"
-                && finding.remediation.contains("speed=fast")
+                && finding.remediation.contains("speed=turbo")
         }));
     }
 
@@ -3940,14 +3972,14 @@ mod tests {
             db.conn(),
             &with_speed(
                 interval(TokenCategory::Input, 20.0, "2026-01-01T00:00:00Z", None),
-                "fast",
+                "turbo",
             ),
         )
         .unwrap();
 
         let changed = with_speed(
             interval(TokenCategory::Input, 30.0, "2026-04-01T00:00:00Z", None),
-            "fast",
+            "turbo",
         );
         let fetcher = MockFetcher {
             intervals: vec![changed],
@@ -3969,7 +4001,7 @@ mod tests {
             .conn()
             .query_row(
                 "SELECT effective_to FROM pricing_intervals
-                 WHERE speed = 'fast' AND rate_per_1m_tokens = 20.0",
+                 WHERE speed = 'turbo' AND rate_per_1m_tokens = 20.0",
                 [],
                 |row| row.get(0),
             )
