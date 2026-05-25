@@ -1690,6 +1690,11 @@ mod tests {
         interval
     }
 
+    fn with_region(mut interval: PricingInterval, region: &str) -> PricingInterval {
+        interval.dimensions.region = Some(region.into());
+        interval
+    }
+
     fn reviewed_source(source: &str) -> PricingSourceMetadata {
         PricingSourceMetadata {
             source: source.into(),
@@ -2538,12 +2543,12 @@ mod tests {
                 "2026-01-01T00:00:00Z",
                 None,
             ),
-            "fast",
+            "turbo",
         ))
         .unwrap();
         let mut record = make_record("r1", "2026-04-05T10:00:00Z", "opus", "proj-a", 1_000_000, 0);
         record.output_tokens = 0;
-        record.speed = Some("fast".into());
+        record.speed = Some("turbo".into());
         db.insert_records(&[record]).unwrap();
 
         let summary = query_summary(
@@ -2568,7 +2573,7 @@ mod tests {
             None,
         );
         interval.dimensions.service_tier = Some("priority".into());
-        interval.dimensions.speed = Some("fast".into());
+        interval.dimensions.speed = Some("turbo".into());
         interval.dimensions.region = Some("us".into());
         interval.source = "reviewed:explicit-source".into();
         db.insert_pricing_interval(&interval).unwrap();
@@ -2583,7 +2588,7 @@ mod tests {
         );
         record.output_tokens = 0;
         record.service_tier = Some("priority".into());
-        record.speed = Some("fast".into());
+        record.speed = Some("turbo".into());
         record.region = Some("us".into());
         db.insert_records(&[record]).unwrap();
 
@@ -2818,7 +2823,7 @@ mod tests {
         .unwrap();
         let mut record = make_record("r1", "2026-04-05T10:00:00Z", "opus", "proj-a", 1_000_000, 0);
         record.output_tokens = 0;
-        record.speed = Some("fast".into());
+        record.speed = Some("turbo".into());
         db.insert_records(&[record]).unwrap();
 
         let err = query_summary(
@@ -2831,7 +2836,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("missing pricing coverage"));
-        assert!(err.contains("speed=fast"));
+        assert!(err.contains("speed=turbo"));
     }
 
     #[test]
@@ -2849,7 +2854,7 @@ mod tests {
         record.model_id = "claude-haiku-4-5-20251001".into();
         record.cache_read_tokens = 1_000_000;
         record.service_tier = Some("standard".into());
-        record.speed = Some("standard".into());
+        record.speed = Some("fast".into());
         db.insert_records(&[record]).unwrap();
 
         let summary = query_summary(
@@ -2865,11 +2870,53 @@ mod tests {
     }
 
     #[test]
-    fn test_query_preserves_fail_closed_for_claude_fast_modifier() {
+    fn test_query_uses_default_pricing_for_claude_placeholder_regions() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_pricing().unwrap();
+        let mut unavailable = make_record(
+            "haiku-region-not-available",
+            "2026-04-05T10:00:00Z",
+            "haiku",
+            "proj-a",
+            0,
+            0,
+        );
+        unavailable.model_id = "claude-haiku-4-5-20251001".into();
+        unavailable.cache_creation_tokens = 1_000_000;
+        unavailable.cache_creation_5m_tokens = 1_000_000;
+        unavailable.region = Some("not_available".into());
+
+        let mut global = make_record(
+            "opus-region-global",
+            "2026-04-05T10:00:00Z",
+            "opus",
+            "proj-a",
+            0,
+            0,
+        );
+        global.cache_read_tokens = 1_000_000;
+        global.region = Some("global".into());
+
+        db.insert_records(&[unavailable, global]).unwrap();
+
+        let summary = query_summary(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!((summary.cost_usd - 1.75).abs() < 0.000001);
+    }
+
+    #[test]
+    fn test_query_preserves_fail_closed_for_real_claude_region_modifier() {
         let db = Database::open_in_memory().unwrap();
         db.seed_pricing().unwrap();
         let mut record = make_record(
-            "haiku-fast",
+            "haiku-region-us",
             "2026-04-05T10:00:00Z",
             "haiku",
             "proj-a",
@@ -2878,8 +2925,7 @@ mod tests {
         );
         record.model_id = "claude-haiku-4-5-20251001".into();
         record.cache_read_tokens = 1_000_000;
-        record.service_tier = Some("standard".into());
-        record.speed = Some("fast".into());
+        record.region = Some("us".into());
         db.insert_records(&[record]).unwrap();
 
         let err = query_summary(
@@ -2892,7 +2938,60 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("missing pricing coverage"));
-        assert!(err.contains("speed=fast"));
+        assert!(err.contains("region=us"));
+
+        db.insert_pricing_interval(&with_region(
+            price(
+                "claude-haiku-4-5-20251001",
+                TokenCategory::CacheRead,
+                0.11,
+                "2026-01-01T00:00:00Z",
+                None,
+            ),
+            "us",
+        ))
+        .unwrap();
+
+        let summary = query_summary(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!((summary.cost_usd - 0.11).abs() < 0.000001);
+    }
+
+    #[test]
+    fn test_query_preserves_fail_closed_for_unsupported_claude_speed_modifier() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_pricing().unwrap();
+        let mut record = make_record(
+            "haiku-turbo",
+            "2026-04-05T10:00:00Z",
+            "haiku",
+            "proj-a",
+            0,
+            0,
+        );
+        record.model_id = "claude-haiku-4-5-20251001".into();
+        record.cache_read_tokens = 1_000_000;
+        record.service_tier = Some("standard".into());
+        record.speed = Some("turbo".into());
+        db.insert_records(&[record]).unwrap();
+
+        let err = query_summary(
+            db.conn(),
+            &QueryFilter {
+                include_subagents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("missing pricing coverage"));
+        assert!(err.contains("speed=turbo"));
 
         db.insert_pricing_interval(&with_speed(
             price(
@@ -2902,7 +3001,7 @@ mod tests {
                 "2026-01-01T00:00:00Z",
                 None,
             ),
-            "fast",
+            "turbo",
         ))
         .unwrap();
 
@@ -3064,7 +3163,7 @@ mod tests {
                 "2026-01-01T00:00:00Z",
                 None,
             ),
-            "fast",
+            "turbo",
         ))
         .unwrap();
         db.insert_pricing_interval(&with_speed(
@@ -3075,11 +3174,11 @@ mod tests {
                 "2026-02-01T00:00:00Z",
                 None,
             ),
-            "fast",
+            "turbo",
         ))
         .unwrap();
         let mut record = make_record(
-            "fast",
+            "turbo",
             "2026-04-05T10:00:00Z",
             "opus",
             "proj-a",
@@ -3087,7 +3186,7 @@ mod tests {
             0,
         );
         record.output_tokens = 0;
-        record.speed = Some("fast".into());
+        record.speed = Some("turbo".into());
         db.insert_records(&[record]).unwrap();
 
         let err = query_summary(
@@ -3100,7 +3199,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("overlapping pricing intervals"));
-        assert!(err.contains("speed=fast"));
+        assert!(err.contains("speed=turbo"));
     }
 
     #[test]

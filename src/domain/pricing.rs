@@ -118,8 +118,9 @@ impl PricingDimensions {
 
     pub fn normalized_for_provider(mut self, provider: ProviderId) -> Self {
         if provider == ProviderId::ClaudeCode {
-            self.service_tier = normalize_claude_default_modifier(self.service_tier);
-            self.speed = normalize_claude_default_modifier(self.speed);
+            self.service_tier = normalize_claude_default_service_tier(self.service_tier);
+            self.speed = normalize_claude_default_speed(self.speed);
+            self.region = normalize_claude_default_region(self.region);
         }
         self
     }
@@ -322,14 +323,19 @@ fn component(
     source_detail: Option<&str>,
 ) -> BillableUsageComponent {
     let service_tier = if record.provider == ProviderId::ClaudeCode {
-        normalize_claude_default_modifier(record.service_tier.clone())
+        normalize_claude_default_service_tier(record.service_tier.clone())
     } else {
         record.service_tier.clone()
     };
     let speed = if record.provider == ProviderId::ClaudeCode {
-        normalize_claude_default_modifier(record.speed.clone())
+        normalize_claude_default_speed(record.speed.clone())
     } else {
         record.speed.clone()
+    };
+    let region = if record.provider == ProviderId::ClaudeCode {
+        normalize_claude_default_region(record.region.clone())
+    } else {
+        record.region.clone()
     };
     BillableUsageComponent {
         provider: record.provider,
@@ -339,15 +345,40 @@ fn component(
         tokens,
         service_tier,
         speed,
-        region: record.region.clone(),
+        region,
         processing_mode: record.processing_mode.clone(),
         source_detail: source_detail.map(str::to_string),
     }
 }
 
-fn normalize_claude_default_modifier(value: Option<String>) -> Option<String> {
+fn normalize_claude_default_service_tier(value: Option<String>) -> Option<String> {
     value.and_then(|value| {
         if value.trim().eq_ignore_ascii_case("standard") {
+            None
+        } else {
+            Some(value)
+        }
+    })
+}
+
+fn normalize_claude_default_speed(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.eq_ignore_ascii_case("standard") || trimmed.eq_ignore_ascii_case("fast") {
+            None
+        } else {
+            Some(value)
+        }
+    })
+}
+
+fn normalize_claude_default_region(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty()
+            || trimmed.eq_ignore_ascii_case("not_available")
+            || trimmed.eq_ignore_ascii_case("global")
+        {
             None
         } else {
             Some(value)
@@ -624,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn test_claude_cache_creation_components_preserve_ttl_and_non_default_request_modifiers() {
+    fn test_claude_cache_creation_components_preserve_ttl_and_real_region_modifiers() {
         let record = TokenRecord {
             provider: ProviderId::ClaudeCode,
             request_id: "claude-r1".into(),
@@ -665,7 +696,7 @@ mod tests {
         }));
         assert!(components.iter().all(|component| {
             component.service_tier.is_none()
-                && component.speed.as_deref() == Some("fast")
+                && component.speed.is_none()
                 && component.region.as_deref() == Some("us")
         }));
     }
@@ -689,7 +720,7 @@ mod tests {
             cache_creation_5m_tokens: 0,
             cache_creation_1h_tokens: 0,
             service_tier: Some("standard".into()),
-            speed: Some("standard".into()),
+            speed: Some("fast".into()),
             region: None,
             processing_mode: None,
             cost_usd: 0.0,
@@ -706,6 +737,73 @@ mod tests {
         assert!(component.service_tier.is_none());
         assert!(component.speed.is_none());
         assert!(PricingDimensions::from_component(component).is_default());
+    }
+
+    #[test]
+    fn test_claude_placeholder_regions_normalize_to_default_dimensions() {
+        for region in ["not_available", "global", "  "] {
+            let record = TokenRecord {
+                provider: ProviderId::ClaudeCode,
+                request_id: format!("claude-{region}"),
+                session_id: "claude-s1".into(),
+                uuid: "claude-u1".into(),
+                timestamp: "2026-04-07T10:00:00Z".parse().unwrap(),
+                model: ModelFamily::Haiku,
+                model_id: "claude-haiku-4-5-20251001".into(),
+                input_tokens: 0,
+                output_tokens: 40,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                cached_input_tokens: 0,
+                reasoning_output_tokens: 0,
+                cache_creation_5m_tokens: 0,
+                cache_creation_1h_tokens: 0,
+                service_tier: None,
+                speed: None,
+                region: Some(region.into()),
+                processing_mode: None,
+                cost_usd: 0.0,
+                project: "demo".into(),
+                source_file: "/tmp/claude.jsonl".into(),
+                is_subagent: false,
+            };
+
+            let components = billable_usage_components(&record);
+            assert_eq!(components.len(), 1);
+            let component = &components[0];
+            assert_eq!(component.token_category, TokenCategory::Output);
+            assert!(component.region.is_none());
+            assert!(PricingDimensions::from_component(component).is_default());
+        }
+
+        let record = TokenRecord {
+            provider: ProviderId::ClaudeCode,
+            request_id: "claude-us".into(),
+            session_id: "claude-s1".into(),
+            uuid: "claude-u1".into(),
+            timestamp: "2026-04-07T10:00:00Z".parse().unwrap(),
+            model: ModelFamily::Haiku,
+            model_id: "claude-haiku-4-5-20251001".into(),
+            input_tokens: 0,
+            output_tokens: 40,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+            cached_input_tokens: 0,
+            reasoning_output_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            service_tier: None,
+            speed: None,
+            region: Some("us".into()),
+            processing_mode: None,
+            cost_usd: 0.0,
+            project: "demo".into(),
+            source_file: "/tmp/claude.jsonl".into(),
+            is_subagent: false,
+        };
+
+        let components = billable_usage_components(&record);
+        assert_eq!(components[0].region.as_deref(), Some("us"));
     }
 
     #[test]

@@ -217,6 +217,85 @@ fn test_seeded_pricing_covers_claude_cache_creation_ttl_dimensions() {
 }
 
 #[test]
+fn test_seeded_pricing_covers_claude_placeholder_regions() {
+    let root = temp_root("pricing-claude-placeholder-regions");
+    let projects = root.join("claude").join("projects");
+    let project_dir = projects.join("-home-tester-work-placeholder-regions");
+    fs::create_dir_all(&project_dir).unwrap();
+    fs::write(
+        project_dir.join("main.jsonl"),
+        concat!(
+            r#"{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":0,"cache_creation_input_tokens":1000000,"cache_creation":{"ephemeral_5m_input_tokens":1000000},"cache_read_input_tokens":0,"output_tokens":0,"speed":"fast","inference_geo":"not_available"}},"requestId":"region-not-available","uuid":"region-not-available-uuid","timestamp":"2026-02-11T08:40:09.341Z","sessionId":"region-session"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":1000000,"cache_creation_input_tokens":0,"cache_read_input_tokens":1000000,"output_tokens":1000000,"speed":"fast","inference_geo":"global"}},"requestId":"region-global","uuid":"region-global-uuid","timestamp":"2026-02-14T00:55:16.342Z","sessionId":"region-session"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let db = root.join("tkstat.db");
+
+    let seed = run_tkstat(
+        &root,
+        [
+            "--pricing-seed",
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+        ],
+    );
+    assert_success(&seed);
+
+    let report = run_tkstat(
+        &root,
+        [
+            "--provider",
+            "claude",
+            "--db",
+            db.to_str().unwrap(),
+            "--data-dir",
+            projects.to_str().unwrap(),
+            "--force-update",
+            "--by-model",
+            "--json",
+        ],
+    );
+    assert_success(&report);
+    assert_no_pricing_coverage_error(&report);
+    let json = parse_stdout_json(&report);
+    let rows = json.as_array().unwrap();
+    assert!(rows.iter().any(|row| {
+        row["model_id"] == "claude-haiku-4-5-20251001"
+            && row["cache_creation_tokens"] == serde_json::json!(1_000_000)
+            && row["cost_usd"] == serde_json::json!(1.25)
+    }));
+    assert!(rows.iter().any(|row| {
+        row["model_id"] == "claude-opus-4-6"
+            && row["input_tokens"] == serde_json::json!(1_000_000)
+            && row["output_tokens"] == serde_json::json!(1_000_000)
+            && row["cache_read_tokens"] == serde_json::json!(1_000_000)
+            && row["cost_usd"] == serde_json::json!(30.5)
+    }));
+
+    let conn = Connection::open(&db).unwrap();
+    let normalized_components: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM usage_billing_components
+             WHERE request_id IN ('region-not-available', 'region-global')
+               AND region IS NULL
+               AND speed IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(normalized_components, 4);
+    drop(conn);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn test_incomplete_seeded_pricing_failure_then_reseed_repairs_csv_report() {
     let root = temp_root("pricing-incomplete-remediation-csv");
     let projects = make_claude_corpus_fixture(&root);
@@ -421,7 +500,7 @@ fn test_cost_report_missing_component_modifier_writes_no_json_or_table_stdout() 
         ))
         .unwrap();
     let mut record = cli_claude_record("missing-modifier", "2026-04-07T10:00:00Z");
-    record.speed = Some("fast".into());
+    record.speed = Some("turbo".into());
     database.insert_records(&[record]).unwrap();
     drop(database);
 
@@ -452,7 +531,7 @@ fn test_cost_report_missing_component_modifier_writes_no_json_or_table_stdout() 
         Some("claude-opus-4-6")
     );
     assert_eq!(stderr_field_value(&stderr, "category"), Some("input"));
-    assert!(stderr.contains("speed=fast"));
+    assert!(stderr.contains("speed=turbo"));
     assert!(
         stderr.contains("usage range 2026-04-07T10:00:00+00:00 to 2026-04-07T10:00:00+00:00"),
         "stderr did not contain usage range:\n{stderr}"
@@ -478,7 +557,7 @@ fn test_cost_report_missing_component_modifier_writes_no_json_or_table_stdout() 
     );
     let stderr = String::from_utf8_lossy(&table.stderr);
     assert!(stderr.contains("missing pricing coverage"));
-    assert!(stderr.contains("speed=fast"));
+    assert!(stderr.contains("speed=turbo"));
 
     let _ = fs::remove_dir_all(root);
 }

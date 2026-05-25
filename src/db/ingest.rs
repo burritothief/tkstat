@@ -263,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn test_inserted_claude_billing_components_preserve_cache_ttl_and_non_default_modifiers() {
+    fn test_inserted_claude_billing_components_preserve_cache_ttl_and_real_region_modifiers() {
         let db = Database::open_in_memory().unwrap();
         let mut record = make_record("r1", 42);
         record.cache_creation_tokens = 150;
@@ -301,7 +301,7 @@ mod tests {
         assert_eq!(rows.len(), 5);
         assert!(rows.iter().all(|row| {
             row.service_tier.is_none()
-                && row.speed.as_deref() == Some("fast")
+                && row.speed.is_none()
                 && row.region.as_deref() == Some("us")
                 && row.processing_mode.is_none()
         }));
@@ -329,6 +329,7 @@ mod tests {
         record.cache_read_tokens = 1_000_000;
         record.service_tier = Some("standard".into());
         record.speed = Some("standard".into());
+        record.region = Some("not_available".into());
         db.insert_records(&[record]).unwrap();
 
         let row: ComponentRow = db
