@@ -217,6 +217,7 @@
     {
       "provider": "codex",
       "model_ids": [
+        "codex-auto-review",
         "gpt-5.1-codex",
         "gpt-5.4",
         "gpt-5.5"
