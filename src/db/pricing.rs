@@ -3059,10 +3059,22 @@ mod tests {
     #[test]
     fn test_bundled_pricing_catalog_intervals_insert_and_audit_cleanly() {
         let intervals = bundled_catalog_intervals().unwrap();
-        assert_eq!(intervals.len(), 78);
+        assert_eq!(intervals.len(), 82);
 
         let db = Database::open_in_memory().unwrap();
-        assert_eq!(seed_pricing_intervals(db.conn(), &intervals).unwrap(), 78);
+        assert_eq!(seed_pricing_intervals(db.conn(), &intervals).unwrap(), 82);
+        applicable_interval_for_dimensions(
+            db.conn(),
+            ProviderId::Codex,
+            "codex-auto-review",
+            TokenCategory::Input,
+            "2026-06-17T23:57:18.227Z".parse().unwrap(),
+            &PricingDimensions {
+                processing_mode: Some("standard".into()),
+                ..Default::default()
+            },
+        )
+        .expect("seeded Codex pricing should cover codex-auto-review standard input");
         let findings = audit_pricing(db.conn()).unwrap();
         assert!(findings.is_empty());
     }
