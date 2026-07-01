@@ -3059,10 +3059,10 @@ mod tests {
     #[test]
     fn test_bundled_pricing_catalog_intervals_insert_and_audit_cleanly() {
         let intervals = bundled_catalog_intervals().unwrap();
-        assert_eq!(intervals.len(), 82);
+        assert_eq!(intervals.len(), 86);
 
         let db = Database::open_in_memory().unwrap();
-        assert_eq!(seed_pricing_intervals(db.conn(), &intervals).unwrap(), 82);
+        assert_eq!(seed_pricing_intervals(db.conn(), &intervals).unwrap(), 86);
         applicable_interval_for_dimensions(
             db.conn(),
             ProviderId::Codex,
@@ -3075,6 +3075,19 @@ mod tests {
             },
         )
         .expect("seeded Codex pricing should cover codex-auto-review standard input");
+        let sol_output = applicable_interval_for_dimensions(
+            db.conn(),
+            ProviderId::Codex,
+            "gpt-5.6-sol",
+            TokenCategory::Output,
+            "2026-07-01T20:09:01.866Z".parse().unwrap(),
+            &PricingDimensions {
+                processing_mode: Some("standard".into()),
+                ..Default::default()
+            },
+        )
+        .expect("seeded Codex pricing should cover GPT-5.6 Sol standard output");
+        assert_eq!(sol_output.rate_per_1m_tokens, 30.0);
         let findings = audit_pricing(db.conn()).unwrap();
         assert!(findings.is_empty());
     }
