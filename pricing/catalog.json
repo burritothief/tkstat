@@ -13,6 +13,12 @@
       "url": "https://openai.com/api/pricing/",
       "retrieved_at": "2026-05-23",
       "notes": "Manual snapshot of OpenAI-style input, cached input, and output prices used for observed Codex model ids. Reasoning output is tracked as output-priced policy metadata."
+    },
+    {
+      "id": "openai-gpt-5-6-pricing-2026-07-01",
+      "url": "https://developers.openai.com/api/docs/pricing",
+      "retrieved_at": "2026-07-01",
+      "notes": "Manual snapshot of GPT-5.6 Sol input, cached input, and output prices from the official OpenAI API pricing guide. Reasoning output is tracked as output-priced policy metadata."
     }
   ],
   "entries": [
@@ -238,6 +244,28 @@
         "reasoning_output": 15.0
       },
       "notes": "Observed Codex model ids default to standard OpenAI processing mode unless logs record a different processing mode."
+    },
+    {
+      "provider": "codex",
+      "model_ids": [
+        "gpt-5.6-sol"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-06-26T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:openai-gpt-5-6-pricing-2026-07-01",
+      "source_ref": "openai-gpt-5-6-pricing-2026-07-01",
+      "dimensions": {
+        "processing_mode": "standard"
+      },
+      "rates_per_1m_tokens": {
+        "input": 5.0,
+        "cached_input": 0.5,
+        "output": 30.0,
+        "reasoning_output": 30.0
+      },
+      "notes": "GPT-5.6 Sol standard-processing pricing. The effective date matches the model announcement date."
     }
   ]
 }
