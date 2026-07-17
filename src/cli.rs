@@ -253,7 +253,7 @@ pub struct Cli {
     #[arg(long = "pricing-seed")]
     pub pricing_seed: bool,
 
-    /// Refresh pricing intervals from the configured pricing source and exit
+    /// Fetch official provider pricing, update intervals, reprice usage, and exit
     #[arg(long = "pricing-refresh")]
     pub pricing_refresh: bool,
 

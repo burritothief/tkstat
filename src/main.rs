@@ -7,13 +7,14 @@ use clap::Parser;
 use rusqlite::{Connection, OpenFlags};
 
 use tkstat::budget::{BudgetPeriod, BudgetReportRow, BudgetWarning, evaluate_budget_rows};
-use tkstat::cli::{ChartMetric, Cli, OutputMode};
+use tkstat::cli::{ChartMetric, Cli, OutputMode, ProviderArg};
 use tkstat::domain::period::{ReportTimeZone, TimePeriod};
 use tkstat::domain::usage::AggregatedRow;
 use tkstat::render::columns;
 use tkstat::{config, db, diagnostics, ingest, render};
 
 fn main() -> Result<()> {
+    let mut timings = tkstat::timing::StageTimings::from_env();
     let cli = Cli::parse();
 
     if cli.no_color {
@@ -35,6 +36,7 @@ fn main() -> Result<()> {
             codex_home: config::resolve_codex_home(),
         }
     };
+    timings.checkpoint("cli-and-config");
 
     if cli.doctor {
         let conn = diagnostic_connection(&db_path)?;
@@ -72,6 +74,7 @@ fn main() -> Result<()> {
     }
 
     let database = db::Database::open(&db_path)?;
+    timings.checkpoint("database-open");
 
     if cli.pricing_seed {
         let inserted = database.seed_pricing()?;
@@ -80,9 +83,14 @@ fn main() -> Result<()> {
     }
 
     if cli.pricing_refresh {
-        let changed = database.refresh_pricing(&db::pricing::BundledPricingFetcher)?;
-        println!("refreshed pricing catalog with {changed} interval changes");
-        return Ok(());
+        if std::env::var_os("TKSTAT_PRICING_REFRESH_OFFLINE").is_some() {
+            let changed = database.refresh_pricing(&db::pricing::BundledPricingFetcher)?;
+            println!(
+                "refreshed pricing catalog with {changed} interval changes (offline bundled source)"
+            );
+            return Ok(());
+        }
+        return refresh_provider_pricing(&database, cli.provider);
     }
 
     if let Some(path) = &cli.pricing_import {
@@ -100,6 +108,7 @@ fn main() -> Result<()> {
         ingest::sync_with_report(&database, &sources, cli.provider.into(), cli.force_update)?;
     let inserted = ingest_report.inserted_records();
     let ingest_ms = start.elapsed().as_millis();
+    timings.checkpoint("source-sync");
 
     if inserted > 0 {
         eprintln!("ingested {inserted} new records in {ingest_ms}ms");
@@ -301,13 +310,80 @@ fn main() -> Result<()> {
             }
         }
     };
+    timings.checkpoint("query-and-render");
 
     for warning in budget_warnings(database.conn(), &filter, &cli)? {
         eprintln!("{}", warning.message(filter_desc.as_deref()));
     }
 
     print!("{output}");
+    timings.checkpoint("warnings-and-output");
     Ok(())
+}
+
+#[cfg(feature = "network-pricing")]
+fn refresh_provider_pricing(database: &db::Database, selection: ProviderArg) -> Result<()> {
+    let providers: &[tkstat::domain::provider::ProviderId] = match selection {
+        ProviderArg::All => &[
+            tkstat::domain::provider::ProviderId::ClaudeCode,
+            tkstat::domain::provider::ProviderId::Codex,
+        ],
+        ProviderArg::ClaudeCode => &[tkstat::domain::provider::ProviderId::ClaudeCode],
+        ProviderArg::Codex => &[tkstat::domain::provider::ProviderId::Codex],
+    };
+    let mut total_changed = 0usize;
+    let mut failures = Vec::new();
+    for &provider in providers {
+        let fetcher = match db::pricing_fetch::LivePricingFetcher::fetch(provider)
+            .and_then(|fetcher| fetcher.cover_unpriced_observed_usage(database.conn()))
+        {
+            Ok(fetcher) => fetcher,
+            Err(err) => {
+                eprintln!(
+                    "tkstat pricing refresh warning: {provider} refresh failed; retained last-known-good prices: {err:#}"
+                );
+                failures.push(provider.to_string());
+                continue;
+            }
+        };
+        let changed = match database.refresh_pricing(&fetcher) {
+            Ok(changed) => changed,
+            Err(err) => {
+                eprintln!(
+                    "tkstat pricing refresh warning: {provider} refresh failed validation; retained last-known-good prices: {err:#}"
+                );
+                failures.push(provider.to_string());
+                continue;
+            }
+        };
+        total_changed += changed;
+        println!("refreshed {provider} pricing with {changed} interval changes");
+        let audit_errors = db::pricing::audit_pricing(database.conn())?
+            .into_iter()
+            .filter(|finding| {
+                finding.provider == provider.as_str()
+                    && matches!(finding.severity, db::pricing::PricingAuditSeverity::Error)
+            })
+            .count();
+        if audit_errors > 0 {
+            eprintln!(
+                "tkstat pricing refresh warning: {provider} source was updated, but {audit_errors} pricing audit error(s) remain; run `tkstat --pricing-audit` for details"
+            );
+            failures.push(provider.to_string());
+        }
+    }
+    if !failures.is_empty() {
+        anyhow::bail!("pricing refresh failed for {}", failures.join(", "));
+    }
+    println!("refreshed pricing catalog with {total_changed} interval changes");
+    Ok(())
+}
+
+#[cfg(not(feature = "network-pricing"))]
+fn refresh_provider_pricing(_database: &db::Database, _selection: ProviderArg) -> Result<()> {
+    anyhow::bail!(
+        "live pricing refresh is unavailable in this build; reinstall tkstat with the `network-pricing` feature or use `--pricing-import`"
+    )
 }
 
 fn with_provider_label(mut rows: Vec<AggregatedRow>, provider_label: &str) -> Vec<AggregatedRow> {

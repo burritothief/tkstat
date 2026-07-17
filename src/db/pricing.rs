@@ -211,6 +211,12 @@ impl PricingFetcher for BundledPricingFetcher {
 }
 
 pub fn insert_interval(conn: &Connection, interval: &PricingInterval) -> Result<()> {
+    insert_interval_raw(conn, interval)?;
+    crate::db::cost::reprice_provider_usage(conn, interval.provider)?;
+    Ok(())
+}
+
+fn insert_interval_raw(conn: &Connection, interval: &PricingInterval) -> Result<()> {
     conn.execute(
         "INSERT INTO pricing_intervals
             (provider, model_id, token_category, service_tier, speed, region, processing_mode,
@@ -301,6 +307,7 @@ fn seed_pricing_catalog_data(conn: &Connection, data: &PricingCatalogData) -> Re
             inserted += 1;
         }
     }
+    crate::db::cost::reprice_dirty_usage(&tx)?;
     tx.commit()?;
     Ok(inserted)
 }
@@ -318,6 +325,7 @@ pub fn refresh_pricing(conn: &Connection, fetcher: &dyn PricingFetcher) -> Resul
         validate_interval(&interval)?;
         changed += upsert_current_interval(&tx, &interval)?;
     }
+    crate::db::cost::reprice_dirty_usage(&tx)?;
     tx.commit()?;
     Ok(changed)
 }

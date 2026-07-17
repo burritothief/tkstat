@@ -209,6 +209,7 @@ where
         .env("CODEX_HOME", &codex_home)
         .env("HOME", &home)
         .env("CLAUDE_CONFIG_DIR", &claude_config)
+        .env("TKSTAT_PRICING_REFRESH_OFFLINE", "1")
         .output()
         .unwrap();
     CommandOutput { args, output }

@@ -140,6 +140,7 @@ fn test_release_gate_builds_cli_ingests_temp_db_and_prints_table() {
         .arg(script)
         .env_remove("TKSTAT_BIN")
         .env("KEEP_TMP", "0")
+        .env("TKSTAT_PRICING_REFRESH_OFFLINE", "1")
         .output()
         .unwrap();
     assert!(
@@ -171,6 +172,7 @@ fn test_operational_script_smoke_runs_with_compiled_binary() {
     let output = Command::new("bash")
         .arg(script)
         .env("TKSTAT_BIN", env!("CARGO_BIN_EXE_tkstat"))
+        .env("TKSTAT_PRICING_REFRESH_OFFLINE", "1")
         .output()
         .unwrap();
     assert!(

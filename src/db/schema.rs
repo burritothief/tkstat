@@ -6,7 +6,7 @@ use crate::domain::provider::ProviderId;
 use crate::domain::timestamp::parse_canonical_utc_rfc3339;
 use crate::domain::usage::{ModelFamily, TokenRecord};
 
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -34,6 +34,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
             );
             create_tables(&tx)?;
             normalize_default_claude_billing_component_dimensions(&tx)?;
+            crate::db::cost::reprice_all_usage(&tx)?;
             set_version(&tx, SCHEMA_VERSION)?;
         }
         Some(v) if v >= 10 => {
@@ -42,6 +43,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
             );
             create_tables(&tx)?;
             normalize_default_claude_billing_component_dimensions(&tx)?;
+            crate::db::cost::reprice_all_usage(&tx)?;
             set_version(&tx, SCHEMA_VERSION)?;
         }
         Some(v) if v >= 9 => {
@@ -52,6 +54,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
             migrate_pricing_dimensions(&tx)?;
             create_tables(&tx)?;
             normalize_default_claude_billing_component_dimensions(&tx)?;
+            crate::db::cost::reprice_all_usage(&tx)?;
             set_version(&tx, SCHEMA_VERSION)?;
         }
         Some(v) if v >= 8 => {
@@ -63,6 +66,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
             create_tables(&tx)?;
             backfill_usage_billing_components(&tx)?;
             normalize_default_claude_billing_component_dimensions(&tx)?;
+            crate::db::cost::reprice_all_usage(&tx)?;
             set_version(&tx, SCHEMA_VERSION)?;
         }
         Some(v) => {
@@ -80,6 +84,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
             create_tables(&tx)?;
             backfill_usage_billing_components(&tx)?;
             normalize_default_claude_billing_component_dimensions(&tx)?;
+            crate::db::cost::reprice_all_usage(&tx)?;
             set_version(&tx, SCHEMA_VERSION)?;
         }
         None => {
@@ -87,6 +92,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
             migrate_provider_ids(&tx)?;
             backfill_usage_billing_components(&tx)?;
             normalize_default_claude_billing_component_dimensions(&tx)?;
+            crate::db::cost::reprice_all_usage(&tx)?;
             set_version(&tx, SCHEMA_VERSION)?;
         }
     }
@@ -228,10 +234,37 @@ fn create_tables(conn: &Connection) -> Result<()> {
             UNIQUE(provider, request_id, component_ordinal)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_billing_components_usage
-            ON usage_billing_components(provider, request_id);
+        DROP INDEX IF EXISTS idx_billing_components_usage;
         CREATE INDEX IF NOT EXISTS idx_billing_components_lookup
             ON usage_billing_components(provider, model_id, token_category, timestamp);
+
+        CREATE TABLE IF NOT EXISTS usage_costs (
+            usage_id            INTEGER PRIMARY KEY,
+            cost_usd            REAL,
+            status              TEXT NOT NULL
+                                CHECK(status IN ('priced', 'missing', 'ambiguous', 'integrity')),
+            pricing_generation  INTEGER NOT NULL,
+            detail              TEXT NOT NULL DEFAULT '',
+            FOREIGN KEY(usage_id) REFERENCES token_usage(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS pricing_state (
+            provider          TEXT PRIMARY KEY CHECK(provider IN ('claude-code', 'codex')),
+            generation        INTEGER NOT NULL DEFAULT 0,
+            dirty             INTEGER NOT NULL DEFAULT 0 CHECK(dirty IN (0, 1)),
+            catalog_hash      TEXT,
+            last_refreshed_at TEXT
+        );
+
+        INSERT OR IGNORE INTO pricing_state(provider) VALUES ('claude-code');
+        INSERT OR IGNORE INTO pricing_state(provider) VALUES ('codex');
+
+        CREATE TABLE IF NOT EXISTS integrity_state (
+            id                       INTEGER PRIMARY KEY CHECK(id = 1),
+            billing_components_dirty INTEGER NOT NULL DEFAULT 0 CHECK(billing_components_dirty IN (0, 1))
+        );
+
+        INSERT OR IGNORE INTO integrity_state(id) VALUES (1);
 
         CREATE TABLE IF NOT EXISTS file_state (
             id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -269,7 +302,59 @@ fn create_tables(conn: &Connection) -> Result<()> {
             catalog_version     TEXT NOT NULL CHECK(catalog_version <> ''),
             source_kind         TEXT NOT NULL CHECK(source_kind IN ('bundled', 'reviewed', 'manual')),
             notes               TEXT NOT NULL DEFAULT ''
-        );",
+        );
+
+        CREATE TRIGGER IF NOT EXISTS trg_components_insert_dirty
+        AFTER INSERT ON usage_billing_components
+        BEGIN
+            UPDATE integrity_state SET billing_components_dirty = 1 WHERE id = 1;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_components_update_dirty
+        AFTER UPDATE ON usage_billing_components
+        BEGIN
+            UPDATE integrity_state SET billing_components_dirty = 1 WHERE id = 1;
+            DELETE FROM usage_costs WHERE usage_id IN (OLD.usage_id, NEW.usage_id);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_components_delete_dirty
+        AFTER DELETE ON usage_billing_components
+        BEGIN
+            UPDATE integrity_state SET billing_components_dirty = 1 WHERE id = 1;
+            DELETE FROM usage_costs WHERE usage_id = OLD.usage_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_usage_update_dirty
+        AFTER UPDATE ON token_usage
+        BEGIN
+            UPDATE integrity_state SET billing_components_dirty = 1 WHERE id = 1;
+            DELETE FROM usage_costs WHERE usage_id = OLD.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_usage_delete_dirty
+        AFTER DELETE ON token_usage
+        BEGIN
+            UPDATE integrity_state SET billing_components_dirty = 1 WHERE id = 1;
+            DELETE FROM usage_costs WHERE usage_id = OLD.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_prices_insert_dirty
+        AFTER INSERT ON pricing_intervals
+        BEGIN
+            UPDATE pricing_state SET dirty = 1 WHERE provider = NEW.provider;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_prices_update_dirty
+        AFTER UPDATE ON pricing_intervals
+        BEGIN
+            UPDATE pricing_state SET dirty = 1 WHERE provider IN (OLD.provider, NEW.provider);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_prices_delete_dirty
+        AFTER DELETE ON pricing_intervals
+        BEGIN
+            UPDATE pricing_state SET dirty = 1 WHERE provider = OLD.provider;
+        END;",
     )?;
     create_pricing_indexes(conn)?;
     Ok(())
@@ -974,8 +1059,28 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
-        assert!(indexes.contains(&"idx_billing_components_usage".to_string()));
+        assert!(!indexes.contains(&"idx_billing_components_usage".to_string()));
         assert!(indexes.contains(&"idx_billing_components_lookup".to_string()));
+
+        let cost_columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(usage_costs)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        for column in [
+            "usage_id",
+            "cost_usd",
+            "status",
+            "pricing_generation",
+            "detail",
+        ] {
+            assert!(
+                cost_columns.contains(&column.to_string()),
+                "missing {column}"
+            );
+        }
     }
 
     #[test]

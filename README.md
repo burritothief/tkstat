@@ -215,6 +215,8 @@ Claude Code stores session logs under its projects directory. Codex stores sessi
 
 `tkstat` maintains a SQLite database (at `~/.local/share/tkstat/tkstat.db`) that caches parsed token records. On each run it checks which JSONL files have changed since the last read (by file size and mtime) and only parses the new bytes.
 
+Normalized billing components remain the auditable source for cost calculation. A one-row-per-request materialized cost cache makes normal reports fast; ingestion prices only new requests, and an explicit pricing refresh reprices the affected provider. Full component and coverage validation runs during mutations and `--pricing-audit`, while mutation triggers ensure direct database corruption still fails closed.
+
 Use `--force-update` to wipe the database and re-ingest everything (e.g., after changing pricing config).
 
 ## Database
@@ -225,14 +227,15 @@ tkstat --data-dir /path/to/logs # custom Claude log directory
 tkstat --provider all           # ingest/query all discoverable providers
 tkstat --provider codex         # ingest/query Codex only
 tkstat --pricing-seed           # install bundled offline pricing intervals
-tkstat --pricing-refresh        # refresh local pricing intervals
+tkstat --pricing-refresh        # fetch official provider pricing and reprice usage
+tkstat --provider codex --pricing-refresh # refresh one provider independently
 tkstat --pricing-audit          # audit local pricing coverage
 tkstat --force-update           # full re-ingest
 ```
 
 The default database location is `~/.local/share/tkstat/tkstat.db`. You can also set the `TKSTAT_DB` environment variable.
 
-Schema v8 stores provider plus exact model identity for every usage row and uses a local effective-dated pricing catalog. `token_usage.timestamp` and `pricing_intervals.effective_from` / `effective_to` are stored as canonical UTC RFC3339 instants. Provider ids are canonical storage keys (`claude-code`, `codex`); friendly CLI aliases such as `--provider claude` are normalized before querying. Because `tkstat` is pre-1.0, upgrading from an older schema rebuilds the usage cache and migrates legacy Claude pricing keys; run `tkstat --force-update` if you need to force a clean reingest.
+Schema v15 stores provider plus exact model identity for every usage row, normalized billing components, effective-dated pricing, provider pricing generations, and materialized request costs. `token_usage.timestamp` and `pricing_intervals.effective_from` / `effective_to` are stored as canonical UTC RFC3339 instants. Provider ids are canonical storage keys (`claude-code`, `codex`); friendly CLI aliases such as `--provider claude` are normalized before querying. Because `tkstat` is pre-1.0, older schemas may rebuild or backfill derived caches during the first run after upgrade.
 
 ### Timezone model
 
@@ -251,6 +254,10 @@ tkstat --pricing-refresh
 tkstat --pricing-audit --json
 ```
 
-Cost-bearing reports fail closed when pricing coverage is missing. If you see an error naming a provider, model id, token category, and date range, run `tkstat --pricing-audit` to list all local pricing findings, then run `tkstat --pricing-seed` for bundled fallback pricing or `tkstat --pricing-refresh` to refresh the local catalog.
+Cost-bearing reports fail closed when pricing coverage is missing. If you see an error naming a provider, model id, token category, and date range, run `tkstat --pricing-refresh` to fetch that provider's official pricing, then use `tkstat --pricing-audit` if coverage is still unavailable. Token-only reports continue to work without pricing coverage. `--pricing-seed` remains the offline fallback and `--pricing-import` accepts a reviewed override.
+
+`--pricing-refresh` is the only normal workflow that accesses the network. Providers refresh in independent transactions: a successful provider is committed, while a failed parser or validation retains that provider's last-known-good prices and makes the command exit nonzero. Live fetching is compiled by the default `network-pricing` feature; builds using `--no-default-features` retain seed and import workflows.
+
+Set `TKSTAT_PROFILE=1` to print stage timings for CLI/configuration, database open, source synchronization, querying/rendering, and output.
 
 `--force-update` clears cached usage rows and file offsets, but keeps locally cached pricing intervals. If pricing was never seeded or refreshed, run one of the pricing commands before cost-bearing reports.

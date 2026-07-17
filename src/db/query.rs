@@ -367,7 +367,7 @@ pub fn query_by_project_with_cost_requirement(
 
 /// Compute a single summary row across all data matching the filter.
 pub fn query_summary(conn: &Connection, filter: &QueryFilter) -> Result<AggregatedRow> {
-    validate_pricing_coverage(conn, filter)?;
+    validate_materialized_pricing(conn, filter)?;
     let (where_clause, params) = build_where_clause(filter);
     let cost_join = cost_join_sql(true);
     let cost_expr = cost_aggregate_sql(true);
@@ -776,65 +776,15 @@ fn cost_join_sql(cost_required: bool) -> &'static str {
         return "";
     }
 
-    "LEFT JOIN (
-        SELECT
-            c.provider,
-            c.request_id,
-            COUNT(DISTINCT c.id) AS component_count,
-            CASE
-                WHEN COUNT(p.id) = COUNT(DISTINCT c.id)
-                THEN SUM(c.tokens * p.rate_per_1m_tokens) / 1000000.0
-                ELSE NULL
-            END AS cost_usd
-        FROM usage_billing_components c
-        LEFT JOIN pricing_intervals p
-          ON p.provider = c.provider
-         AND p.model_id = c.model_id
-         AND p.token_category = c.token_category
-         AND p.service_tier IS c.service_tier
-         AND p.speed IS c.speed
-         AND p.region IS c.region
-         AND p.processing_mode IS c.processing_mode
-         AND p.source_detail IS c.source_detail
-         AND p.currency = 'USD'
-         AND p.effective_from <= c.timestamp
-         AND (p.effective_to IS NULL OR c.timestamp < p.effective_to)
-        GROUP BY c.provider, c.request_id
-    ) component_cost
-      ON component_cost.provider = token_usage.provider
-     AND component_cost.request_id = token_usage.request_id"
+    "LEFT JOIN usage_costs component_cost
+       ON component_cost.usage_id = token_usage.id"
 }
 
 fn cost_aggregate_sql(cost_required: bool) -> String {
     if !cost_required {
         return "0.0".into();
     }
-    let has_billable_tokens = has_billable_tokens_sql();
-    format!(
-        "CASE
-            WHEN COALESCE(SUM(
-                CASE
-                    WHEN component_cost.cost_usd IS NULL
-                     AND (
-                        component_cost.component_count IS NOT NULL
-                        OR {has_billable_tokens}
-                     )
-                    THEN 1
-                    ELSE 0
-                END
-            ), 0) > 0
-            THEN NULL
-            ELSE COALESCE(SUM(component_cost.cost_usd), 0.0)
-        END"
-    )
-}
-
-fn has_billable_tokens_sql() -> String {
-    TokenCategory::ALL
-        .into_iter()
-        .map(|category| format!("({}) > 0", billable_tokens_sql(category)))
-        .collect::<Vec<_>>()
-        .join(" OR ")
+    "COALESCE(SUM(component_cost.cost_usd), 0.0)".into()
 }
 
 fn billable_tokens_sql(category: TokenCategory) -> String {
@@ -883,9 +833,77 @@ fn validate_pricing_if_required(
     cost_required: bool,
 ) -> Result<()> {
     if cost_required {
-        validate_pricing_coverage(conn, filter)
+        validate_materialized_pricing(conn, filter)
     } else {
         Ok(())
+    }
+}
+
+fn validate_materialized_pricing(conn: &Connection, filter: &QueryFilter) -> Result<()> {
+    let components_dirty: bool = conn.query_row(
+        "SELECT billing_components_dirty != 0 FROM integrity_state WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    if components_dirty {
+        validate_pricing_coverage(conn, filter)?;
+        bail!(
+            "billing component integrity state is stale; run `tkstat --force-update` to rebuild usage"
+        );
+    }
+
+    let pricing_dirty = match filter.provider {
+        Some(provider) => conn.query_row(
+            "SELECT dirty != 0 FROM pricing_state WHERE provider = ?1",
+            [provider.as_str()],
+            |row| row.get(0),
+        )?,
+        None => conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pricing_state WHERE dirty != 0)",
+            [],
+            |row| row.get(0),
+        )?,
+    };
+    if pricing_dirty {
+        validate_pricing_coverage(conn, filter)?;
+        bail!("materialized costs are stale; run `tkstat --pricing-refresh`");
+    }
+
+    let (where_clause, params) = build_where_clause(filter);
+    let sql = format!(
+        "SELECT token_usage.provider, token_usage.request_id, token_usage.model_id,
+                component_cost.status, component_cost.detail
+         FROM token_usage
+         LEFT JOIN usage_costs component_cost ON component_cost.usage_id = token_usage.id
+         JOIN pricing_state materialized_state ON materialized_state.provider = token_usage.provider
+         WHERE 1=1 {where_clause}
+           AND (component_cost.usage_id IS NULL
+                OR component_cost.status != 'priced'
+                OR component_cost.pricing_generation != materialized_state.generation)
+         LIMIT 1"
+    );
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params.iter().map(|param| param.as_ref()).collect();
+    let issue = conn.query_row(&sql, param_refs.as_slice(), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+        ))
+    });
+    match issue {
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(()),
+        Err(err) => Err(err.into()),
+        Ok((provider, request_id, model_id, status, detail)) => {
+            validate_pricing_coverage(conn, filter)?;
+            bail!(
+                "materialized cost is unavailable for provider={provider}, request_id={request_id}, model={model_id}, status={}, detail={}; run `tkstat --pricing-refresh`",
+                status.as_deref().unwrap_or("missing"),
+                detail.as_deref().unwrap_or("cost cache row is missing")
+            )
+        }
     }
 }
 
@@ -1591,6 +1609,14 @@ mod tests {
     };
     use crate::domain::pricing::{PricingInterval, TokenCategory};
     use crate::domain::usage::ModelFamily;
+
+    #[test]
+    fn cost_reports_join_materialized_costs_not_component_prices() {
+        let join = cost_join_sql(true);
+        assert!(join.contains("usage_costs"));
+        assert!(!join.contains("usage_billing_components"));
+        assert!(!join.contains("pricing_intervals"));
+    }
 
     fn seed_db(db: &Database) {
         db.seed_pricing().unwrap();
