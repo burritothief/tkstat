@@ -1,4 +1,6 @@
+use std::io::{self, Write};
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -13,14 +15,32 @@ use tkstat::domain::usage::AggregatedRow;
 use tkstat::render::columns;
 use tkstat::{config, db, diagnostics, ingest, render};
 
-fn main() -> Result<()> {
-    let mut timings = tkstat::timing::StageTimings::from_env();
+fn main() -> ExitCode {
     let cli = Cli::parse();
-
-    if cli.no_color {
-        // SAFETY: set_var is called before any threads are spawned.
-        unsafe { std::env::set_var("NO_COLOR", "1") };
+    let stdout = io::stdout();
+    let stderr = io::stderr();
+    let mut stdout = stdout.lock();
+    let mut stderr = stderr.lock();
+    if let Err(message) = cli.validate() {
+        let _ = writeln!(
+            stderr,
+            "error: {message}\n\nFor more information, try '--help'."
+        );
+        return ExitCode::from(2);
     }
+
+    match run(cli, &mut stdout, &mut stderr) {
+        Ok(code) => code,
+        Err(error) if is_broken_pipe(&error) => ExitCode::SUCCESS,
+        Err(error) => {
+            let _ = writeln!(stderr, "Error: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cli: Cli, stdout: &mut dyn Write, stderr: &mut dyn Write) -> Result<ExitCode> {
+    let mut timings = tkstat::timing::StageTimings::from_env();
 
     let db_path = config::resolve_db_path(cli.db_path.as_deref());
     let sources = if cli.doctor {
@@ -46,11 +66,11 @@ fn main() -> Result<()> {
         } else {
             render::doctor::render_doctor(&inventory)
         };
-        println!("{output}");
+        writeln!(stdout, "{output}")?;
         if !inventory.blocking_issues().is_empty() {
-            std::process::exit(1);
+            return Ok(ExitCode::FAILURE);
         }
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     if cli.pricing_audit {
@@ -66,11 +86,11 @@ fn main() -> Result<()> {
         } else {
             render::pricing_audit::render_pricing_audit(&findings)
         };
-        println!("{output}");
+        writeln!(stdout, "{output}")?;
         if has_errors {
-            std::process::exit(1);
+            return Ok(ExitCode::FAILURE);
         }
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     let database = db::Database::open(&db_path)?;
@@ -78,26 +98,31 @@ fn main() -> Result<()> {
 
     if cli.pricing_seed {
         let inserted = database.seed_pricing()?;
-        println!("seeded {inserted} pricing intervals");
-        return Ok(());
+        writeln!(stdout, "seeded {inserted} pricing intervals")?;
+        return Ok(ExitCode::SUCCESS);
     }
 
     if cli.pricing_refresh {
         if std::env::var_os("TKSTAT_PRICING_REFRESH_OFFLINE").is_some() {
             let snapshot = db::pricing::bundled_pricing_snapshot()?;
             let changed = database.refresh_pricing(&snapshot)?;
-            println!(
+            writeln!(
+                stdout,
                 "refreshed pricing catalog with {changed} interval changes (offline bundled source)"
-            );
-            return Ok(());
+            )?;
+            return Ok(ExitCode::SUCCESS);
         }
-        return refresh_provider_pricing(&database, cli.provider);
+        refresh_provider_pricing(&database, cli.provider, stdout, stderr)?;
+        return Ok(ExitCode::SUCCESS);
     }
 
     if let Some(path) = &cli.pricing_import {
         let changed = database.import_pricing_catalog(Path::new(path))?;
-        println!("imported pricing catalog with {changed} interval changes");
-        return Ok(());
+        writeln!(
+            stdout,
+            "imported pricing catalog with {changed} interval changes"
+        )?;
+        return Ok(ExitCode::SUCCESS);
     }
 
     if cli.force_update {
@@ -116,10 +141,10 @@ fn main() -> Result<()> {
     timings.checkpoint("source-sync");
 
     if inserted > 0 {
-        eprintln!("ingested {inserted} new records in {ingest_ms}ms");
+        writeln!(stderr, "ingested {inserted} new records in {ingest_ms}ms")?;
     }
     for warning in ingestion_warnings(database.conn(), &ingest_report)? {
-        eprintln!("{warning}");
+        writeln!(stderr, "{warning}")?;
     }
 
     let columns = match &cli.columns {
@@ -163,11 +188,12 @@ fn main() -> Result<()> {
                 .collect();
             let metric_label = format!("{metric:?}").to_lowercase();
             if cli.heatmap {
-                render::heatmap::render_heatmap_with_today(
+                render::heatmap::render_heatmap_with_today_and_color(
                     provider_label,
                     &chart_data,
                     &metric_label,
                     report_today(filter.report_timezone),
+                    !cli.no_color && std::env::var_os("NO_COLOR").is_none(),
                 )
             } else {
                 render::chart::render_chart(provider_label, &chart_data, &metric_label)
@@ -305,16 +331,22 @@ fn main() -> Result<()> {
     timings.checkpoint("query-and-render");
 
     for warning in budget_warnings(database.conn(), &filter, &cli)? {
-        eprintln!("{}", warning.message(filter_desc.as_deref()));
+        writeln!(stderr, "{}", warning.message(filter_desc.as_deref()))?;
     }
 
-    print!("{output}");
+    write!(stdout, "{output}")?;
+    stdout.flush()?;
     timings.checkpoint("warnings-and-output");
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(feature = "network-pricing")]
-fn refresh_provider_pricing(database: &db::Database, selection: ProviderArg) -> Result<()> {
+fn refresh_provider_pricing(
+    database: &db::Database,
+    selection: ProviderArg,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
     let mut total_changed = 0usize;
     let mut failures = Vec::new();
     for &provider in selection.providers() {
@@ -323,9 +355,10 @@ fn refresh_provider_pricing(database: &db::Database, selection: ProviderArg) -> 
         {
             Ok(snapshot) => snapshot,
             Err(err) => {
-                eprintln!(
+                writeln!(
+                    stderr,
                     "tkstat pricing refresh warning: {provider} refresh failed; retained last-known-good prices: {err:#}"
-                );
+                )?;
                 failures.push(provider.to_string());
                 continue;
             }
@@ -333,15 +366,19 @@ fn refresh_provider_pricing(database: &db::Database, selection: ProviderArg) -> 
         let changed = match database.refresh_pricing(&snapshot) {
             Ok(changed) => changed,
             Err(err) => {
-                eprintln!(
+                writeln!(
+                    stderr,
                     "tkstat pricing refresh warning: {provider} refresh failed validation; retained last-known-good prices: {err:#}"
-                );
+                )?;
                 failures.push(provider.to_string());
                 continue;
             }
         };
         total_changed += changed;
-        println!("refreshed {provider} pricing with {changed} interval changes");
+        writeln!(
+            stdout,
+            "refreshed {provider} pricing with {changed} interval changes"
+        )?;
         let audit_errors = db::pricing::audit_pricing(database.conn())?
             .into_iter()
             .filter(|finding| {
@@ -350,24 +387,41 @@ fn refresh_provider_pricing(database: &db::Database, selection: ProviderArg) -> 
             })
             .count();
         if audit_errors > 0 {
-            eprintln!(
+            writeln!(
+                stderr,
                 "tkstat pricing refresh warning: {provider} source was updated, but {audit_errors} pricing audit error(s) remain; run `tkstat --pricing-audit` for details"
-            );
+            )?;
             failures.push(provider.to_string());
         }
     }
     if !failures.is_empty() {
         anyhow::bail!("pricing refresh failed for {}", failures.join(", "));
     }
-    println!("refreshed pricing catalog with {total_changed} interval changes");
+    writeln!(
+        stdout,
+        "refreshed pricing catalog with {total_changed} interval changes"
+    )?;
     Ok(())
 }
 
 #[cfg(not(feature = "network-pricing"))]
-fn refresh_provider_pricing(_database: &db::Database, _selection: ProviderArg) -> Result<()> {
+fn refresh_provider_pricing(
+    _database: &db::Database,
+    _selection: ProviderArg,
+    _stdout: &mut dyn Write,
+    _stderr: &mut dyn Write,
+) -> Result<()> {
     anyhow::bail!(
         "live pricing refresh is unavailable in this build; reinstall tkstat with the `network-pricing` feature or use `--pricing-import`"
     )
+}
+
+fn is_broken_pipe(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<io::Error>()
+            .is_some_and(|error| error.kind() == io::ErrorKind::BrokenPipe)
+    })
 }
 
 fn with_provider_label(mut rows: Vec<AggregatedRow>, provider_label: &str) -> Vec<AggregatedRow> {
@@ -695,5 +749,14 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("last ingested at 2026-05-23 20:05:00"))
         );
+    }
+
+    #[test]
+    fn test_broken_pipe_is_a_successful_unix_termination() {
+        let error = anyhow::Error::new(io::Error::from(io::ErrorKind::BrokenPipe));
+        assert!(is_broken_pipe(&error));
+
+        let error = anyhow::Error::new(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert!(!is_broken_pipe(&error));
     }
 }

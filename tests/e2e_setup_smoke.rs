@@ -3,6 +3,7 @@
 mod support;
 use support::*;
 
+#[cfg(unix)]
 use std::process::Command;
 
 #[test]
@@ -134,6 +135,7 @@ fn test_recommended_setup_and_reset_command_sequence() {
 }
 
 #[test]
+#[cfg(unix)]
 fn test_release_gate_builds_cli_ingests_temp_db_and_prints_table() {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/e2e_smoke.sh");
     let output = Command::new("bash")
@@ -167,6 +169,7 @@ fn test_release_gate_builds_cli_ingests_temp_db_and_prints_table() {
 }
 
 #[test]
+#[cfg(unix)]
 fn test_operational_script_smoke_runs_with_compiled_binary() {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/script_smoke.sh");
     let output = Command::new("bash")

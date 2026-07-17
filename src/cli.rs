@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use clap::{Parser, ValueEnum};
+use clap::{ArgGroup, Parser, ValueEnum};
 
 use crate::db::query::QueryFilter;
 use crate::domain::period::{ReportTimeZone, TimePeriod};
@@ -62,9 +62,44 @@ pub enum OutputMode {
 #[derive(Parser, Debug)]
 #[command(
     name = "tkstat",
-    about = "vnstat-style monitor for Claude Code token usage",
+    about = "vnstat-style monitor for Claude Code and Codex token usage",
     version,
     disable_help_flag = true,
+    group(
+        ArgGroup::new("period")
+            .args(["fiveminutes", "hourly", "daily", "monthly", "yearly"])
+            .multiple(false)
+    ),
+    group(
+        ArgGroup::new("report_mode")
+            .args([
+                "top",
+                "summary",
+                "budget",
+                "heatmap",
+                "chart",
+                "by_model",
+                "by_provider",
+                "by_project",
+                "oneline",
+                "cost_explain"
+            ])
+            .multiple(false)
+            .conflicts_with("period")
+    ),
+    group(
+        ArgGroup::new("maintenance")
+            .args([
+                "doctor",
+                "pricing_audit",
+                "pricing_seed",
+                "pricing_refresh",
+                "pricing_import"
+            ])
+            .multiple(false)
+            .conflicts_with("period")
+            .conflicts_with("report_mode")
+    ),
     after_help = "Examples:\n  tkstat            Daily token usage (default, system-local dates)\n  tkstat --utc -d   Daily stats with UTC calendar buckets\n  tkstat -5         5-minute resolution\n  tkstat -h         Hourly statistics\n  tkstat -m         Monthly summary\n  tkstat -t 10      Top 10 days by usage\n  tkstat --model opus   Filter by model family alias\n  tkstat --model claude-sonnet-4-5-20250929   Filter by exact model id\n  tkstat --by-model     Group by exact model id\n  tkstat --by-provider  Group by provider\n  tkstat --by-project   Group by project\n  tkstat --budget       Budget consumption\n  tkstat --heatmap  GitHub-style usage calendar\n  tkstat --chart    Braille time-series chart\n  tkstat --json -d  Daily stats as JSON"
 )]
 pub struct Cli {
@@ -94,7 +129,12 @@ pub struct Cli {
     pub yearly: bool,
 
     /// Show top N days by usage
-    #[arg(short = 't', long = "top", value_name = "N")]
+    #[arg(
+        short = 't',
+        long = "top",
+        value_name = "N",
+        value_parser = parse_positive_u32
+    )]
     pub top: Option<Option<u32>>,
 
     /// Show short summary
@@ -174,12 +214,23 @@ pub struct Cli {
     pub utc: bool,
 
     /// Maximum number of rows to display
-    #[arg(long = "limit", value_name = "N")]
+    #[arg(long = "limit", value_name = "N", value_parser = parse_positive_u32)]
     pub limit: Option<u32>,
 
     // -- Output format --
     /// Output as JSON
-    #[arg(long = "json")]
+    #[arg(
+        long = "json",
+        conflicts_with_all = [
+            "oneline",
+            "chart",
+            "heatmap",
+            "summary",
+            "pricing_seed",
+            "pricing_refresh",
+            "pricing_import"
+        ]
+    )]
     pub json: bool,
 
     /// Single-line output
@@ -240,7 +291,7 @@ pub struct Cli {
     #[arg(long = "columns", value_name = "COLS")]
     pub columns: Option<String>,
 
-    /// Disable colors (set NO_COLOR=1 env var instead)
+    /// Disable colors (NO_COLOR=1 is also supported)
     #[arg(long = "no-color")]
     pub no_color: bool,
 
@@ -274,15 +325,55 @@ pub struct Cli {
     pub no_subagents: bool,
 
     /// Warn when any daily filtered cost reaches this USD threshold
-    #[arg(long = "daily-budget-usd", value_name = "AMOUNT")]
+    #[arg(
+        long = "daily-budget-usd",
+        value_name = "AMOUNT",
+        value_parser = parse_positive_f64
+    )]
     pub daily_budget_usd: Option<f64>,
 
     /// Warn when any monthly filtered cost reaches this USD threshold
-    #[arg(long = "monthly-budget-usd", value_name = "AMOUNT")]
+    #[arg(
+        long = "monthly-budget-usd",
+        value_name = "AMOUNT",
+        value_parser = parse_positive_f64
+    )]
     pub monthly_budget_usd: Option<f64>,
 }
 
+fn parse_positive_u32(value: &str) -> Result<u32, String> {
+    let value = value
+        .parse::<u32>()
+        .map_err(|_| format!("expected a positive integer, got {value:?}"))?;
+    if value == 0 {
+        return Err("value must be greater than zero".to_string());
+    }
+    Ok(value)
+}
+
+fn parse_positive_f64(value: &str) -> Result<f64, String> {
+    let value = value
+        .parse::<f64>()
+        .map_err(|_| format!("expected a positive number, got {value:?}"))?;
+    if !value.is_finite() || value <= 0.0 {
+        return Err("value must be finite and greater than zero".to_string());
+    }
+    Ok(value)
+}
+
 impl Cli {
+    /// Validate relationships that clap cannot express declaratively.
+    pub fn validate(&self) -> Result<(), String> {
+        if let (Some(begin), Some(end)) = (self.begin, self.end)
+            && begin > end
+        {
+            return Err(format!(
+                "--begin ({begin}) must not be later than --end ({end})"
+            ));
+        }
+        Ok(())
+    }
+
     pub fn provider_label(&self) -> &'static str {
         match self.provider {
             ProviderArg::All => ALL_PROVIDERS_LABEL,
@@ -522,5 +613,53 @@ mod tests {
         assert!(Cli::try_parse_from(["tkstat", "--csv", "--by-model"]).is_ok());
         assert!(Cli::try_parse_from(["tkstat", "--csv", "--by-provider"]).is_ok());
         assert!(Cli::try_parse_from(["tkstat", "--csv", "--by-project"]).is_ok());
+    }
+
+    #[test]
+    fn test_period_and_report_modes_are_mutually_exclusive() {
+        assert!(Cli::try_parse_from(["tkstat", "-h", "-m"]).is_err());
+        assert!(Cli::try_parse_from(["tkstat", "--by-model", "--by-provider"]).is_err());
+        assert!(Cli::try_parse_from(["tkstat", "--chart", "-d"]).is_err());
+    }
+
+    #[test]
+    fn test_maintenance_commands_are_mutually_exclusive_from_reports() {
+        assert!(Cli::try_parse_from(["tkstat", "--doctor", "--pricing-audit"]).is_err());
+        assert!(Cli::try_parse_from(["tkstat", "--pricing-seed", "--summary"]).is_err());
+    }
+
+    #[test]
+    fn test_json_rejects_modes_that_do_not_support_structured_output() {
+        for flag in [
+            "--oneline",
+            "--chart",
+            "--heatmap",
+            "--summary",
+            "--pricing-seed",
+            "--pricing-refresh",
+        ] {
+            assert!(
+                Cli::try_parse_from(["tkstat", "--json", flag]).is_err(),
+                "--json should conflict with {flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_numeric_arguments_must_be_positive_and_finite() {
+        for args in [
+            ["tkstat", "--limit", "0"],
+            ["tkstat", "--daily-budget-usd", "-1"],
+            ["tkstat", "--monthly-budget-usd", "NaN"],
+            ["tkstat", "--monthly-budget-usd", "inf"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
+
+    #[test]
+    fn test_begin_must_not_be_after_end() {
+        let cli = Cli::parse_from(["tkstat", "--begin", "2026-07-17", "--end", "2026-07-16"]);
+        assert!(cli.validate().is_err());
     }
 }

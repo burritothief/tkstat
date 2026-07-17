@@ -104,8 +104,11 @@ impl MigrationPlan {
 }
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
-    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-    conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
+    conn.execute_batch(
+        "PRAGMA foreign_keys=ON;
+         PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;",
+    )?;
 
     let tx = conn.unchecked_transaction()?;
 
@@ -564,6 +567,16 @@ mod tests {
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_foreign_keys_are_enabled() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        let enabled: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(enabled, 1);
     }
 
     #[test]

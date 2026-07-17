@@ -135,8 +135,14 @@ impl Database {
         let size_bytes = u64_to_sql_i64("size_bytes", size_bytes)?;
         let last_byte_offset = u64_to_sql_i64("last_byte_offset", last_byte_offset)?;
         self.conn.execute(
-            "INSERT OR REPLACE INTO file_state (provider, path, size_bytes, mtime_secs, last_byte_offset, last_ingested_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
+            "INSERT INTO file_state
+                (provider, path, size_bytes, mtime_secs, last_byte_offset, last_ingested_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+             ON CONFLICT(provider, path) DO UPDATE SET
+                size_bytes = excluded.size_bytes,
+                mtime_secs = excluded.mtime_secs,
+                last_byte_offset = excluded.last_byte_offset,
+                last_ingested_at = excluded.last_ingested_at",
             rusqlite::params![
                 provider.as_str(),
                 path.to_string_lossy().as_ref(),

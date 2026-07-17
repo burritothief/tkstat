@@ -13,7 +13,7 @@ pub fn resolve_data_dir(cli_override: Option<&str>) -> Result<Option<PathBuf>> {
         anyhow::bail!("specified data dir does not exist: {dir}");
     }
 
-    if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR") {
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
         let p = PathBuf::from(dir).join("projects");
         if p.is_dir() {
             return Ok(Some(p));
@@ -40,7 +40,7 @@ pub fn resolve_data_dir(cli_override: Option<&str>) -> Result<Option<PathBuf>> {
 /// Resolve the Codex home directory.
 /// Priority: CODEX_HOME env > ~/.codex
 pub fn resolve_codex_home() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("CODEX_HOME") {
+    if let Some(dir) = std::env::var_os("CODEX_HOME") {
         let p = PathBuf::from(dir);
         if p.is_dir() {
             return Some(p);
@@ -59,7 +59,7 @@ pub fn resolve_db_path(cli_override: Option<&str>) -> PathBuf {
         return PathBuf::from(path);
     }
 
-    if let Ok(path) = std::env::var("TKSTAT_DB") {
+    if let Some(path) = std::env::var_os("TKSTAT_DB") {
         return PathBuf::from(path);
     }
 

@@ -29,9 +29,9 @@ fn interpolate_color(t: f64) -> (u8, u8, u8) {
     (lerp(r0, r1, frac), lerp(g0, g1, frac), lerp(b0, b1, frac))
 }
 
-/// Format a colored block or fall back to a plain block if NO_COLOR is set.
-fn colored_block(r: u8, g: u8, b: u8) -> String {
-    if std::env::var_os("NO_COLOR").is_some() {
+/// Format a colored block or fall back to a plain block when color is disabled.
+fn colored_block(r: u8, g: u8, b: u8, color: bool) -> String {
+    if !color {
         BLOCK.to_string()
     } else {
         format!("{}", BLOCK.truecolor(r, g, b))
@@ -57,6 +57,23 @@ pub fn render_heatmap_with_today(
     daily_data: &[(String, f64)],
     metric_label: &str,
     today: NaiveDate,
+) -> String {
+    render_heatmap_with_today_and_color(
+        provider_label,
+        daily_data,
+        metric_label,
+        today,
+        std::env::var_os("NO_COLOR").is_none(),
+    )
+}
+
+/// Render a contribution heatmap with an explicit color policy.
+pub fn render_heatmap_with_today_and_color(
+    provider_label: &str,
+    daily_data: &[(String, f64)],
+    metric_label: &str,
+    today: NaiveDate,
+    color: bool,
 ) -> String {
     if daily_data.is_empty() {
         return format!(" {provider_label} / heatmap ({metric_label})\n No data available.\n");
@@ -143,7 +160,7 @@ pub fn render_heatmap_with_today(
                     val.ln() / log_max
                 };
                 let (r, g, b) = interpolate_color(t.max(0.0));
-                out.push_str(&colored_block(r, g, b));
+                out.push_str(&colored_block(r, g, b, color));
             }
             day += TimeDelta::days(7);
         }
@@ -154,7 +171,7 @@ pub fn render_heatmap_with_today(
     for i in 0..8 {
         let t = i as f64 / 7.0;
         let (r, g, b) = interpolate_color(t);
-        out.push_str(&colored_block(r, g, b));
+        out.push_str(&colored_block(r, g, b, color));
     }
     out.push_str(" More\n");
 
@@ -287,5 +304,17 @@ mod tests {
         let (r, g, b) = interpolate_color(0.5);
         // Should be in the middle of the blues spectrum
         assert!(r < 150 && g > 100 && b > 180);
+    }
+
+    #[test]
+    fn test_explicit_no_color_never_emits_ansi_sequences() {
+        let output = render_heatmap_with_today_and_color(
+            "test",
+            &[("2026-04-01".to_string(), 10.0)],
+            "tokens",
+            NaiveDate::from_ymd_opt(2026, 4, 1).unwrap(),
+            false,
+        );
+        assert!(!output.contains("\x1b["));
     }
 }
