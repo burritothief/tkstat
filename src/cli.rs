@@ -6,7 +6,6 @@ use crate::domain::period::{ReportTimeZone, TimePeriod};
 use crate::domain::provider::{
     ALL_PROVIDERS_LABEL, CLAUDE_CODE_PROVIDER, CODEX_PROVIDER, ProviderId,
 };
-use crate::ingest::ProviderSelection;
 
 /// Metric to use for chart/heatmap rendering.
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -25,17 +24,26 @@ pub enum ProviderArg {
     Codex,
 }
 
-impl From<ProviderArg> for ProviderSelection {
-    fn from(value: ProviderArg) -> Self {
-        match value {
-            ProviderArg::All => Self::All,
-            ProviderArg::ClaudeCode => Self::ClaudeCode,
-            ProviderArg::Codex => Self::Codex,
+impl ProviderArg {
+    pub const fn provider(self) -> Option<ProviderId> {
+        match self {
+            Self::All => None,
+            Self::ClaudeCode => Some(ProviderId::ClaudeCode),
+            Self::Codex => Some(ProviderId::Codex),
+        }
+    }
+
+    pub fn providers(self) -> &'static [ProviderId] {
+        match self {
+            Self::All => &ProviderId::ALL,
+            Self::ClaudeCode => &[ProviderId::ClaudeCode],
+            Self::Codex => &[ProviderId::Codex],
         }
     }
 }
 
 /// Resolved output mode from CLI flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
     Table(TimePeriod),
     TopDays,
@@ -348,11 +356,6 @@ impl Cli {
 
     /// Build a query filter from CLI flags.
     pub fn query_filter(&self) -> QueryFilter {
-        let provider = match self.provider {
-            ProviderArg::All => None,
-            ProviderArg::ClaudeCode => Some(ProviderId::ClaudeCode),
-            ProviderArg::Codex => Some(ProviderId::Codex),
-        };
         QueryFilter {
             begin: self.begin,
             end: self.end,
@@ -361,7 +364,7 @@ impl Cli {
             } else {
                 ReportTimeZone::Local
             },
-            provider,
+            provider: self.provider.provider(),
             model: self.model.clone(),
             model_family: self.model_family.clone(),
             project: self.project.clone(),
@@ -423,17 +426,14 @@ mod tests {
     #[test]
     fn test_provider_flag_parses_codex() {
         let cli = Cli::parse_from(["tkstat", "--provider", "codex"]);
-        assert!(matches!(cli.provider.into(), ProviderSelection::Codex));
+        assert_eq!(cli.provider.provider(), Some(ProviderId::Codex));
         assert_eq!(cli.query_filter().provider, Some(ProviderId::Codex));
     }
 
     #[test]
     fn test_provider_flag_canonicalizes_claude_code_and_alias() {
         let canonical = Cli::parse_from(["tkstat", "--provider", "claude-code"]);
-        assert!(matches!(
-            canonical.provider.into(),
-            ProviderSelection::ClaudeCode
-        ));
+        assert_eq!(canonical.provider.provider(), Some(ProviderId::ClaudeCode));
         assert_eq!(
             canonical.query_filter().provider,
             Some(ProviderId::ClaudeCode)
@@ -441,10 +441,7 @@ mod tests {
         assert_eq!(canonical.provider_label(), "claude-code");
 
         let alias = Cli::parse_from(["tkstat", "--provider", "claude"]);
-        assert!(matches!(
-            alias.provider.into(),
-            ProviderSelection::ClaudeCode
-        ));
+        assert_eq!(alias.provider.provider(), Some(ProviderId::ClaudeCode));
         assert_eq!(alias.query_filter().provider, Some(ProviderId::ClaudeCode));
         assert_eq!(alias.provider_label(), "claude-code");
     }

@@ -10,6 +10,7 @@ use serde::Deserialize;
 use crate::domain::provider::ProviderId;
 use crate::domain::usage::{ModelFamily, TokenRecord};
 use crate::ingest::ParsedFile;
+use crate::ingest::jsonl;
 use crate::ingest::walker::SourceFile;
 
 pub const CLAUDE_PROVIDER: &str = crate::domain::provider::CLAUDE_CODE_PROVIDER;
@@ -91,30 +92,12 @@ pub fn parse_jsonl_bytes(bytes: &[u8], file_info: &SourceFile) -> Vec<TokenRecor
 
 /// Parse raw JSONL bytes that may end with an incomplete trailing line.
 pub fn parse_jsonl_bytes_incremental(bytes: &[u8], file_info: &SourceFile) -> ParsedFile {
-    let safe_len = safe_jsonl_prefix_len(bytes);
+    let safe_len = jsonl::safe_prefix_len::<JsonlEntry>(bytes);
     let parsed = parse_jsonl_lines_with_errors(bytes[..safe_len].split(|&b| b == b'\n'), file_info);
     ParsedFile {
         records: parsed.records,
         safe_byte_offset: safe_len as u64,
         parse_errors: parsed.parse_errors,
-    }
-}
-
-fn complete_jsonl_prefix_len(bytes: &[u8]) -> usize {
-    bytes
-        .iter()
-        .rposition(|&b| b == b'\n')
-        .map_or(0, |pos| pos + 1)
-}
-
-fn safe_jsonl_prefix_len(bytes: &[u8]) -> usize {
-    let newline_safe_len = complete_jsonl_prefix_len(bytes);
-    if newline_safe_len < bytes.len()
-        && serde_json::from_slice::<JsonlEntry>(&bytes[newline_safe_len..]).is_ok()
-    {
-        bytes.len()
-    } else {
-        newline_safe_len
     }
 }
 
@@ -186,9 +169,10 @@ fn parse_jsonl_lines_with_errors<'a>(
             split_cache_creation_tokens
         };
         let service_tier =
-            first_present([usage.service_tier, msg.service_tier, entry.service_tier]);
-        let speed = first_present([usage.speed, msg.speed, entry.speed]);
-        let region = first_present([usage.inference_geo, msg.inference_geo, entry.inference_geo]);
+            jsonl::first_present([usage.service_tier, msg.service_tier, entry.service_tier]);
+        let speed = jsonl::first_present([usage.speed, msg.speed, entry.speed]);
+        let region =
+            jsonl::first_present([usage.inference_geo, msg.inference_geo, entry.inference_geo]);
 
         let record = TokenRecord {
             provider: ProviderId::ClaudeCode,
@@ -229,14 +213,6 @@ fn parse_jsonl_lines_with_errors<'a>(
         records: seen.into_values().collect(),
         parse_errors,
     }
-}
-
-fn first_present(values: impl IntoIterator<Item = Option<String>>) -> Option<String> {
-    values
-        .into_iter()
-        .flatten()
-        .map(|value| value.trim().to_string())
-        .find(|value| !value.is_empty())
 }
 
 #[cfg(test)]

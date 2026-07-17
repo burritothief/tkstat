@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 
 use crate::domain::provider::ProviderId;
 use crate::domain::usage::TokenRecord;
@@ -37,32 +38,10 @@ impl TokenCategory {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TokenCountField {
-    Input,
-    Output,
-    CacheRead,
-    CacheCreation,
-    CachedInput,
-    ReasoningOutput,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BillableTokenExpression {
-    Field(TokenCountField),
-    SaturatingSub(TokenCountField, TokenCountField),
+    Field(TokenCategory),
+    SaturatingSub(TokenCategory, TokenCategory),
     Zero,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BillableTokenRule {
-    pub category: TokenCategory,
-    pub expression: BillableTokenExpression,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProviderBillingPolicy {
-    pub provider: ProviderId,
-    pub rules: &'static [BillableTokenRule],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,15 +66,12 @@ pub struct BillableUsageComponent {
     pub timestamp: DateTime<Utc>,
     pub token_category: TokenCategory,
     pub tokens: u64,
-    pub service_tier: Option<String>,
-    pub speed: Option<String>,
-    pub region: Option<String>,
-    pub processing_mode: Option<String>,
-    pub source_detail: Option<String>,
+    pub dimensions: PricingDimensions,
 }
 
 /// Normalized dimensions that can affect a provider's pricing rate.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Deserialize)]
+#[serde(default)]
 pub struct PricingDimensions {
     pub service_tier: Option<String>,
     pub speed: Option<String>,
@@ -104,16 +80,20 @@ pub struct PricingDimensions {
     pub source_detail: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PricingKey {
+    pub provider: ProviderId,
+    pub model_id: String,
+    pub token_category: TokenCategory,
+    pub dimensions: PricingDimensions,
+}
+
 impl PricingDimensions {
     pub fn from_component(component: &BillableUsageComponent) -> Self {
-        Self {
-            service_tier: component.service_tier.clone(),
-            speed: component.speed.clone(),
-            region: component.region.clone(),
-            processing_mode: component.processing_mode.clone(),
-            source_detail: component.source_detail.clone(),
-        }
-        .normalized_for_provider(component.provider)
+        component
+            .dimensions
+            .clone()
+            .normalized_for_provider(component.provider)
     }
 
     pub fn normalized_for_provider(mut self, provider: ProviderId) -> Self {
@@ -132,69 +112,31 @@ impl PricingDimensions {
             && self.processing_mode.is_none()
             && self.source_detail.is_none()
     }
+
+    pub fn display_suffix(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(value) = &self.service_tier {
+            parts.push(format!("service_tier={value}"));
+        }
+        if let Some(value) = &self.speed {
+            parts.push(format!("speed={value}"));
+        }
+        if let Some(value) = &self.region {
+            parts.push(format!("region={value}"));
+        }
+        if let Some(value) = &self.processing_mode {
+            parts.push(format!("processing_mode={value}"));
+        }
+        if let Some(value) = &self.source_detail {
+            parts.push(format!("source_detail={value}"));
+        }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", parts.join(","))
+        }
+    }
 }
-
-const DEFAULT_BILLING_RULES: [BillableTokenRule; 6] = [
-    BillableTokenRule {
-        category: TokenCategory::Input,
-        expression: BillableTokenExpression::Field(TokenCountField::Input),
-    },
-    BillableTokenRule {
-        category: TokenCategory::Output,
-        expression: BillableTokenExpression::Field(TokenCountField::Output),
-    },
-    BillableTokenRule {
-        category: TokenCategory::CacheRead,
-        expression: BillableTokenExpression::Field(TokenCountField::CacheRead),
-    },
-    BillableTokenRule {
-        category: TokenCategory::CacheCreation,
-        expression: BillableTokenExpression::Field(TokenCountField::CacheCreation),
-    },
-    BillableTokenRule {
-        category: TokenCategory::CachedInput,
-        expression: BillableTokenExpression::Field(TokenCountField::CachedInput),
-    },
-    BillableTokenRule {
-        category: TokenCategory::ReasoningOutput,
-        expression: BillableTokenExpression::Field(TokenCountField::ReasoningOutput),
-    },
-];
-
-const OPENAI_BILLING_RULES: [BillableTokenRule; 6] = [
-    BillableTokenRule {
-        category: TokenCategory::Input,
-        expression: BillableTokenExpression::SaturatingSub(
-            TokenCountField::Input,
-            TokenCountField::CachedInput,
-        ),
-    },
-    BillableTokenRule {
-        category: TokenCategory::Output,
-        expression: BillableTokenExpression::Field(TokenCountField::Output),
-    },
-    BillableTokenRule {
-        category: TokenCategory::CacheRead,
-        expression: BillableTokenExpression::Field(TokenCountField::CacheRead),
-    },
-    BillableTokenRule {
-        category: TokenCategory::CacheCreation,
-        expression: BillableTokenExpression::Field(TokenCountField::CacheCreation),
-    },
-    BillableTokenRule {
-        category: TokenCategory::CachedInput,
-        expression: BillableTokenExpression::Field(TokenCountField::CachedInput),
-    },
-    BillableTokenRule {
-        category: TokenCategory::ReasoningOutput,
-        expression: BillableTokenExpression::Zero,
-    },
-];
-
-const PROVIDER_BILLING_POLICIES: [ProviderBillingPolicy; 1] = [ProviderBillingPolicy {
-    provider: ProviderId::Codex,
-    rules: &OPENAI_BILLING_RULES,
-}];
 
 impl std::fmt::Display for TokenCategory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -343,11 +285,13 @@ fn component(
         timestamp: record.timestamp,
         token_category,
         tokens,
-        service_tier,
-        speed,
-        region,
-        processing_mode: record.processing_mode.clone(),
-        source_detail: source_detail.map(str::to_string),
+        dimensions: PricingDimensions {
+            service_tier,
+            speed,
+            region,
+            processing_mode: record.processing_mode.clone(),
+            source_detail: source_detail.map(str::to_string),
+        },
     }
 }
 
@@ -406,39 +350,26 @@ pub fn billable_token_categories(
     provider: ProviderId,
     counts: TokenCounts,
 ) -> Vec<(TokenCategory, u64)> {
-    billable_token_rules(provider)
-        .iter()
-        .filter_map(|rule| {
-            let tokens = rule.expression.tokens(counts);
-            (tokens > 0).then_some((rule.category, tokens))
+    TokenCategory::ALL
+        .into_iter()
+        .filter_map(|category| {
+            let tokens = billable_token_expression(provider, category).tokens(counts);
+            (tokens > 0).then_some((category, tokens))
         })
         .collect()
 }
 
-pub fn default_billing_rules() -> &'static [BillableTokenRule] {
-    &DEFAULT_BILLING_RULES
-}
-
-pub fn provider_billing_policies() -> &'static [ProviderBillingPolicy] {
-    &PROVIDER_BILLING_POLICIES
-}
-
-pub fn billable_token_rules(provider: ProviderId) -> &'static [BillableTokenRule] {
-    provider_billing_policies()
-        .iter()
-        .find(|policy| policy.provider == provider)
-        .map_or(default_billing_rules(), |policy| policy.rules)
-}
-
-pub fn billable_token_rule(
-    rules: &'static [BillableTokenRule],
+pub fn billable_token_expression(
+    provider: ProviderId,
     category: TokenCategory,
-) -> BillableTokenRule {
-    rules
-        .iter()
-        .copied()
-        .find(|rule| rule.category == category)
-        .expect("every billing policy must define all token categories")
+) -> BillableTokenExpression {
+    match (provider, category) {
+        (ProviderId::Codex, TokenCategory::Input) => {
+            BillableTokenExpression::SaturatingSub(TokenCategory::Input, TokenCategory::CachedInput)
+        }
+        (ProviderId::Codex, TokenCategory::ReasoningOutput) => BillableTokenExpression::Zero,
+        _ => BillableTokenExpression::Field(category),
+    }
 }
 
 impl BillableTokenExpression {
@@ -453,15 +384,15 @@ impl BillableTokenExpression {
     }
 }
 
-impl TokenCountField {
+impl TokenCategory {
     pub fn tokens(self, counts: TokenCounts) -> u64 {
         match self {
-            Self::Input => counts.input_tokens,
-            Self::Output => counts.output_tokens,
-            Self::CacheRead => counts.cache_read_tokens,
-            Self::CacheCreation => counts.cache_creation_tokens,
-            Self::CachedInput => counts.cached_input_tokens,
-            Self::ReasoningOutput => counts.reasoning_output_tokens,
+            TokenCategory::Input => counts.input_tokens,
+            TokenCategory::Output => counts.output_tokens,
+            TokenCategory::CacheRead => counts.cache_read_tokens,
+            TokenCategory::CacheCreation => counts.cache_creation_tokens,
+            TokenCategory::CachedInput => counts.cached_input_tokens,
+            TokenCategory::ReasoningOutput => counts.reasoning_output_tokens,
         }
     }
 }
@@ -681,17 +612,17 @@ mod tests {
         assert!(components.iter().any(|component| {
             component.token_category == TokenCategory::CacheCreation
                 && component.tokens == 100
-                && component.source_detail.as_deref() == Some("ephemeral_5m")
+                && component.dimensions.source_detail.as_deref() == Some("ephemeral_5m")
         }));
         assert!(components.iter().any(|component| {
             component.token_category == TokenCategory::CacheCreation
                 && component.tokens == 50
-                && component.source_detail.as_deref() == Some("ephemeral_1h")
+                && component.dimensions.source_detail.as_deref() == Some("ephemeral_1h")
         }));
         assert!(components.iter().all(|component| {
-            component.service_tier.is_none()
-                && component.speed.is_none()
-                && component.region.as_deref() == Some("us")
+            component.dimensions.service_tier.is_none()
+                && component.dimensions.speed.is_none()
+                && component.dimensions.region.as_deref() == Some("us")
         }));
     }
 
@@ -728,8 +659,8 @@ mod tests {
         let component = &components[0];
         assert_eq!(component.token_category, TokenCategory::CacheRead);
         assert_eq!(component.tokens, 40);
-        assert!(component.service_tier.is_none());
-        assert!(component.speed.is_none());
+        assert!(component.dimensions.service_tier.is_none());
+        assert!(component.dimensions.speed.is_none());
         assert!(PricingDimensions::from_component(component).is_default());
     }
 
@@ -766,7 +697,7 @@ mod tests {
             assert_eq!(components.len(), 1);
             let component = &components[0];
             assert_eq!(component.token_category, TokenCategory::Output);
-            assert!(component.region.is_none());
+            assert!(component.dimensions.region.is_none());
             assert!(PricingDimensions::from_component(component).is_default());
         }
 
@@ -797,7 +728,7 @@ mod tests {
         };
 
         let components = billable_usage_components(&record);
-        assert_eq!(components[0].region.as_deref(), Some("us"));
+        assert_eq!(components[0].dimensions.region.as_deref(), Some("us"));
     }
 
     #[test]
@@ -821,10 +752,10 @@ mod tests {
             components.iter().any(|component| {
                 component.token_category == category
                     && component.tokens == tokens
-                    && component.service_tier.is_none()
-                    && component.speed.is_none()
-                    && component.region.is_none()
-                    && component.processing_mode.is_none()
+                    && component.dimensions.service_tier.is_none()
+                    && component.dimensions.speed.is_none()
+                    && component.dimensions.region.is_none()
+                    && component.dimensions.processing_mode.is_none()
             }),
             "missing component {category:?}/{tokens} in {components:?}"
         );

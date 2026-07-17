@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod codex;
+mod jsonl;
 pub mod walker;
 
 use std::path::{Path, PathBuf};
@@ -80,13 +81,6 @@ impl ProviderAdapter for CodexAdapter {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderSelection {
-    All,
-    ClaudeCode,
-    Codex,
-}
-
 #[derive(Debug, Clone)]
 pub struct ProviderSources {
     pub claude_data_dir: Option<PathBuf>,
@@ -153,24 +147,21 @@ impl IngestReport {
 pub fn sync(
     db: &Database,
     sources: &ProviderSources,
-    selection: ProviderSelection,
+    provider: Option<ProviderId>,
     force: bool,
 ) -> Result<usize> {
-    Ok(sync_with_report(db, sources, selection, force)?.inserted_records())
+    Ok(sync_with_report(db, sources, provider, force)?.inserted_records())
 }
 
 /// Run the full ingestion pipeline and return provider-level status metadata.
 pub fn sync_with_report(
     db: &Database,
     sources: &ProviderSources,
-    selection: ProviderSelection,
+    provider: Option<ProviderId>,
     force: bool,
 ) -> Result<IngestReport> {
     let mut report = IngestReport::default();
-    if matches!(
-        selection,
-        ProviderSelection::All | ProviderSelection::ClaudeCode
-    ) {
+    if provider.is_none_or(|provider| provider == ProviderId::ClaudeCode) {
         match &sources.claude_data_dir {
             Some(data_dir) => {
                 let adapter = ClaudeCodeAdapter::new(data_dir);
@@ -187,7 +178,7 @@ pub fn sync_with_report(
         }
     }
 
-    if matches!(selection, ProviderSelection::All | ProviderSelection::Codex) {
+    if provider.is_none_or(|provider| provider == ProviderId::Codex) {
         match &sources.codex_home {
             Some(codex_home) => {
                 let adapter = CodexAdapter::new(codex_home);
@@ -702,10 +693,7 @@ mod tests {
             claude_data_dir: Some(claude_projects_dir.clone()),
             codex_home: Some(codex_home.clone()),
         };
-        assert_eq!(
-            sync(&db, &sources, ProviderSelection::All, false).unwrap(),
-            2
-        );
+        assert_eq!(sync(&db, &sources, None, false).unwrap(), 2);
 
         let claude = crate::db::query::query_summary(
             db.conn(),

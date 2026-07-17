@@ -84,7 +84,8 @@ fn main() -> Result<()> {
 
     if cli.pricing_refresh {
         if std::env::var_os("TKSTAT_PRICING_REFRESH_OFFLINE").is_some() {
-            let changed = database.refresh_pricing(&db::pricing::BundledPricingFetcher)?;
+            let snapshot = db::pricing::bundled_pricing_snapshot()?;
+            let changed = database.refresh_pricing(&snapshot)?;
             println!(
                 "refreshed pricing catalog with {changed} interval changes (offline bundled source)"
             );
@@ -104,8 +105,12 @@ fn main() -> Result<()> {
     }
 
     let start = Instant::now();
-    let ingest_report =
-        ingest::sync_with_report(&database, &sources, cli.provider.into(), cli.force_update)?;
+    let ingest_report = ingest::sync_with_report(
+        &database,
+        &sources,
+        cli.provider.provider(),
+        cli.force_update,
+    )?;
     let inserted = ingest_report.inserted_records();
     let ingest_ms = start.elapsed().as_millis();
     timings.checkpoint("source-sync");
@@ -205,109 +210,96 @@ fn main() -> Result<()> {
             )?;
             render::json::render_json(&with_provider_label(rows, provider_label))
         }
-        OutputMode::ByModel => {
-            let rows = db::query::query_by_model_with_cost_requirement(
-                database.conn(),
-                &filter,
-                cli.effective_limit(),
-                cli.json || table_columns_require_cost || budget_warnings_require_cost,
-            )?;
-            if cli.csv {
-                render::csv::render_csv(&rows, &columns)
-            } else if cli.json {
-                render::json::render_json(&rows)
-            } else {
-                render::table::render_table(
-                    provider_label,
+        mode @ (OutputMode::ByModel | OutputMode::ByProvider | OutputMode::ByProject) => {
+            let cost_required =
+                cli.json || table_columns_require_cost || budget_warnings_require_cost;
+            let (rows, title) = match mode {
+                OutputMode::ByModel => (
+                    db::query::query_by_model_with_cost_requirement(
+                        database.conn(),
+                        &filter,
+                        cli.effective_limit(),
+                        cost_required,
+                    )?,
                     "by model",
-                    &rows,
-                    &columns,
-                    filter_desc.as_deref(),
-                )
-            }
-        }
-        OutputMode::ByProvider => {
-            let rows = db::query::query_by_provider_with_cost_requirement(
-                database.conn(),
-                &filter,
-                cli.effective_limit(),
-                cli.json || table_columns_require_cost || budget_warnings_require_cost,
-            )?;
-            if cli.csv {
-                render::csv::render_csv(&rows, &columns)
-            } else if cli.json {
-                render::json::render_json(&rows)
-            } else {
-                render::table::render_table(
-                    provider_label,
+                ),
+                OutputMode::ByProvider => (
+                    db::query::query_by_provider_with_cost_requirement(
+                        database.conn(),
+                        &filter,
+                        cli.effective_limit(),
+                        cost_required,
+                    )?,
                     "by provider",
-                    &rows,
-                    &columns,
-                    filter_desc.as_deref(),
-                )
-            }
-        }
-        OutputMode::ByProject => {
-            let rows = db::query::query_by_project_with_cost_requirement(
-                database.conn(),
-                &filter,
-                cli.effective_limit(),
-                cli.json || table_columns_require_cost || budget_warnings_require_cost,
-            )?;
-            if cli.csv {
-                render::csv::render_csv(&rows, &columns)
-            } else if cli.json {
-                render::json::render_json(&rows)
-            } else {
-                render::table::render_table(
-                    provider_label,
+                ),
+                OutputMode::ByProject => (
+                    db::query::query_by_project_with_cost_requirement(
+                        database.conn(),
+                        &filter,
+                        cli.effective_limit(),
+                        cost_required,
+                    )?,
                     "by project",
-                    &rows,
-                    &columns,
-                    filter_desc.as_deref(),
-                )
-            }
+                ),
+                _ => unreachable!(),
+            };
+            render_tabular_rows(
+                &rows,
+                TabularOutput {
+                    provider_label,
+                    title,
+                    columns: &columns,
+                    filter_description: filter_desc.as_deref(),
+                    csv: cli.csv,
+                    json: cli.json,
+                },
+            )
         }
         OutputMode::TopDays => {
-            let rows = db::query::query_top_with_cost_requirement(
-                database.conn(),
-                &filter,
-                cli.effective_limit(),
-                cli.json || table_columns_require_cost || budget_warnings_require_cost,
-            )?;
-            if cli.csv {
-                render::csv::render_csv(&with_provider_label(rows, provider_label), &columns)
-            } else if cli.json {
-                render::json::render_json(&with_provider_label(rows, provider_label))
-            } else {
-                render::table::render_table(
+            let rows = with_provider_label(
+                db::query::query_top_with_cost_requirement(
+                    database.conn(),
+                    &filter,
+                    cli.effective_limit(),
+                    cli.json || table_columns_require_cost || budget_warnings_require_cost,
+                )?,
+                provider_label,
+            );
+            render_tabular_rows(
+                &rows,
+                TabularOutput {
                     provider_label,
-                    "top days",
-                    &rows,
-                    &columns,
-                    filter_desc.as_deref(),
-                )
-            }
+                    title: "top days",
+                    columns: &columns,
+                    filter_description: filter_desc.as_deref(),
+                    csv: cli.csv,
+                    json: cli.json,
+                },
+            )
         }
         OutputMode::Table(period) => {
-            let rows = db::query::query_by_period_with_cost_requirement(
-                database.conn(),
-                period,
-                &filter,
-                cli.effective_limit(),
-                table_columns_require_cost || budget_warnings_require_cost,
-            )?;
-            if cli.csv {
-                render::csv::render_csv(&with_provider_label(rows, provider_label), &columns)
-            } else {
-                render::table::render_table(
+            let rows = with_provider_label(
+                db::query::query_by_period_with_cost_requirement(
+                    database.conn(),
+                    period,
+                    &filter,
+                    cli.effective_limit(),
+                    table_columns_require_cost || budget_warnings_require_cost,
+                )?,
+                provider_label,
+            );
+            let title = period.to_string();
+            render_tabular_rows(
+                &rows,
+                TabularOutput {
                     provider_label,
-                    &period.to_string(),
-                    &rows,
-                    &columns,
-                    filter_desc.as_deref(),
-                )
-            }
+                    title: &title,
+                    columns: &columns,
+                    filter_description: filter_desc.as_deref(),
+                    csv: cli.csv,
+                    json: false,
+                },
+            )
         }
     };
     timings.checkpoint("query-and-render");
@@ -323,21 +315,13 @@ fn main() -> Result<()> {
 
 #[cfg(feature = "network-pricing")]
 fn refresh_provider_pricing(database: &db::Database, selection: ProviderArg) -> Result<()> {
-    let providers: &[tkstat::domain::provider::ProviderId] = match selection {
-        ProviderArg::All => &[
-            tkstat::domain::provider::ProviderId::ClaudeCode,
-            tkstat::domain::provider::ProviderId::Codex,
-        ],
-        ProviderArg::ClaudeCode => &[tkstat::domain::provider::ProviderId::ClaudeCode],
-        ProviderArg::Codex => &[tkstat::domain::provider::ProviderId::Codex],
-    };
     let mut total_changed = 0usize;
     let mut failures = Vec::new();
-    for &provider in providers {
-        let fetcher = match db::pricing_fetch::LivePricingFetcher::fetch(provider)
-            .and_then(|fetcher| fetcher.cover_unpriced_observed_usage(database.conn()))
+    for &provider in selection.providers() {
+        let snapshot = match db::pricing_fetch::LivePricing::fetch(provider)
+            .and_then(|snapshot| snapshot.cover_unpriced_observed_usage(database.conn()))
         {
-            Ok(fetcher) => fetcher,
+            Ok(snapshot) => snapshot,
             Err(err) => {
                 eprintln!(
                     "tkstat pricing refresh warning: {provider} refresh failed; retained last-known-good prices: {err:#}"
@@ -346,7 +330,7 @@ fn refresh_provider_pricing(database: &db::Database, selection: ProviderArg) -> 
                 continue;
             }
         };
-        let changed = match database.refresh_pricing(&fetcher) {
+        let changed = match database.refresh_pricing(&snapshot) {
             Ok(changed) => changed,
             Err(err) => {
                 eprintln!(
@@ -393,6 +377,31 @@ fn with_provider_label(mut rows: Vec<AggregatedRow>, provider_label: &str) -> Ve
         }
     }
     rows
+}
+
+struct TabularOutput<'a> {
+    provider_label: &'a str,
+    title: &'a str,
+    columns: &'a [columns::Column],
+    filter_description: Option<&'a str>,
+    csv: bool,
+    json: bool,
+}
+
+fn render_tabular_rows(rows: &[AggregatedRow], output: TabularOutput<'_>) -> String {
+    if output.csv {
+        render::csv::render_csv(rows, output.columns)
+    } else if output.json {
+        render::json::render_json(rows)
+    } else {
+        render::table::render_table(
+            output.provider_label,
+            output.title,
+            rows,
+            output.columns,
+            output.filter_description,
+        )
+    }
 }
 
 fn columns_require_cost(columns: &[columns::Column]) -> bool {

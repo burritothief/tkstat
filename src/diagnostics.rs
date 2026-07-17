@@ -312,15 +312,7 @@ fn pricing_inventory(conn: &Connection) -> PricingInventory {
 }
 
 fn table_exists(conn: &Connection, name: &str) -> bool {
-    conn.query_row(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
-        [name],
-        |_| Ok(()),
-    )
-    .optional()
-    .ok()
-    .flatten()
-    .is_some()
+    crate::db::table_exists(conn, name).unwrap_or(false)
 }
 
 fn count_query(conn: &Connection, sql: &str) -> u64 {

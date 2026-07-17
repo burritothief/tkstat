@@ -4,6 +4,7 @@ pub mod local_time;
 pub mod pricing;
 #[cfg(feature = "network-pricing")]
 pub mod pricing_fetch;
+pub(crate) mod pricing_validation;
 pub mod query;
 pub mod schema;
 
@@ -71,8 +72,8 @@ impl Database {
         pricing::seed_pricing(&self.conn)
     }
 
-    pub fn refresh_pricing(&self, fetcher: &dyn pricing::PricingFetcher) -> Result<usize> {
-        pricing::refresh_pricing(&self.conn, fetcher)
+    pub fn refresh_pricing(&self, snapshot: &pricing::PricingSnapshot) -> Result<usize> {
+        pricing::refresh_pricing(&self.conn, snapshot)
     }
 
     pub fn import_pricing_catalog(&self, path: &Path) -> Result<usize> {
@@ -169,6 +170,20 @@ pub(crate) fn ensure_non_empty(field: &str, value: &str) -> Result<()> {
         bail!("{field} must not be empty");
     }
     Ok(())
+}
+
+pub(crate) fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+pub(crate) fn table_row_count(conn: &Connection, table: &str) -> Result<i64> {
+    let sql = format!("SELECT COUNT(*) FROM {table}");
+    Ok(conn.query_row(&sql, [], |row| row.get(0))?)
 }
 
 #[cfg(test)]

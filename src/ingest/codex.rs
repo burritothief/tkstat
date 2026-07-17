@@ -14,6 +14,7 @@ use crate::domain::provider::ProviderId;
 use crate::domain::timestamp::format_utc_rfc3339;
 use crate::domain::usage::{ModelFamily, TokenRecord};
 use crate::ingest::ParsedFile;
+use crate::ingest::jsonl;
 use crate::ingest::walker::SourceFile;
 
 pub const CODEX_PROVIDER: &str = crate::domain::provider::CODEX_PROVIDER;
@@ -106,26 +107,8 @@ pub fn parse_session_bytes_incremental(
     emit_after_offset: u64,
     file_info: &SourceFile,
 ) -> ParsedFile {
-    let safe_len = safe_jsonl_prefix_len(bytes);
+    let safe_len = jsonl::safe_prefix_len::<CodexEntry>(bytes);
     parse_session_lines(&bytes[..safe_len], emit_after_offset, file_info)
-}
-
-fn complete_jsonl_prefix_len(bytes: &[u8]) -> usize {
-    bytes
-        .iter()
-        .rposition(|&b| b == b'\n')
-        .map_or(0, |pos| pos + 1)
-}
-
-fn safe_jsonl_prefix_len(bytes: &[u8]) -> usize {
-    let newline_safe_len = complete_jsonl_prefix_len(bytes);
-    if newline_safe_len < bytes.len()
-        && serde_json::from_slice::<CodexEntry>(&bytes[newline_safe_len..]).is_ok()
-    {
-        bytes.len()
-    } else {
-        newline_safe_len
-    }
 }
 
 fn parse_session_lines(bytes: &[u8], emit_after_offset: u64, file_info: &SourceFile) -> ParsedFile {
@@ -216,7 +199,7 @@ fn token_count_record(
     let model_id = state.model_id.clone()?;
     let usage_value = usage_value(&entry.payload)?;
     let usage = parse_usage(usage_value)?;
-    let processing_mode = first_present([
+    let processing_mode = jsonl::first_present([
         string_at(usage_value, &["processing_mode"]),
         string_at(&entry.payload, &["info", "processing_mode"]),
         string_at(&entry.payload, &["processing_mode"]),
@@ -300,14 +283,6 @@ fn parse_usage(value: &Value) -> Option<CodexUsage> {
             .unwrap_or(0);
     }
     Some(usage)
-}
-
-fn first_present(values: impl IntoIterator<Item = Option<String>>) -> Option<String> {
-    values
-        .into_iter()
-        .flatten()
-        .map(|value| value.trim().to_string())
-        .find(|value| !value.is_empty())
 }
 
 fn string_at(value: &Value, path: &[&str]) -> Option<String> {
