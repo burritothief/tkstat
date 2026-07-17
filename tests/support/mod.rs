@@ -209,6 +209,7 @@ where
         .env("CODEX_HOME", &codex_home)
         .env("HOME", &home)
         .env("CLAUDE_CONFIG_DIR", &claude_config)
+        .env("TZ", "America/Los_Angeles")
         .env("TKSTAT_PRICING_REFRESH_OFFLINE", "1")
         .output()
         .unwrap();

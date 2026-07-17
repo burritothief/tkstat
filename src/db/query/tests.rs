@@ -684,6 +684,11 @@ fn test_hourly_grouping_can_use_utc_across_dst_fall_boundary() {
 #[test]
 fn test_local_hourly_gap_fill_skips_spring_forward_nonexistent_hour() {
     let db = Database::open_in_memory().unwrap();
+    crate::db::local_time::register_local_bucket_function_for_timezone(
+        db.conn(),
+        "America/Los_Angeles".parse().unwrap(),
+    )
+    .unwrap();
     db.seed_pricing().unwrap();
     let first = "2026-03-08T09:30:00Z";
     let second = "2026-03-08T10:30:00Z";
@@ -693,18 +698,14 @@ fn test_local_hourly_gap_fill_skips_spring_forward_nonexistent_hour() {
     ])
     .unwrap();
 
-    let local_day = sqlite_local_day(db.conn(), first);
     let filter = QueryFilter {
-        begin: NaiveDate::parse_from_str(&local_day, "%Y-%m-%d").ok(),
-        end: NaiveDate::parse_from_str(&local_day, "%Y-%m-%d").ok(),
+        begin: NaiveDate::from_ymd_opt(2026, 3, 8),
+        end: NaiveDate::from_ymd_opt(2026, 3, 8),
         include_subagents: true,
         ..Default::default()
     };
     let rows = query_by_period(db.conn(), TimePeriod::Hourly, &filter, 30).unwrap();
-    let expected = vec![
-        sqlite_local_hour(db.conn(), first),
-        sqlite_local_hour(db.conn(), second),
-    ];
+    let expected = vec!["2026-03-08 01:00", "2026-03-08 03:00"];
     assert_eq!(
         rows.iter()
             .map(|row| row.period.as_str())
@@ -720,6 +721,11 @@ fn test_local_hourly_gap_fill_skips_spring_forward_nonexistent_hour() {
 #[test]
 fn test_local_hourly_gap_fill_combines_fall_back_repeated_hour() {
     let db = Database::open_in_memory().unwrap();
+    crate::db::local_time::register_local_bucket_function_for_timezone(
+        db.conn(),
+        "America/Los_Angeles".parse().unwrap(),
+    )
+    .unwrap();
     db.seed_pricing().unwrap();
     let first = "2026-11-01T08:30:00Z";
     let second = "2026-11-01T09:30:00Z";
@@ -729,17 +735,14 @@ fn test_local_hourly_gap_fill_combines_fall_back_repeated_hour() {
     ])
     .unwrap();
 
-    let local_day = sqlite_local_day(db.conn(), first);
     let filter = QueryFilter {
-        begin: NaiveDate::parse_from_str(&local_day, "%Y-%m-%d").ok(),
-        end: NaiveDate::parse_from_str(&local_day, "%Y-%m-%d").ok(),
+        begin: NaiveDate::from_ymd_opt(2026, 11, 1),
+        end: NaiveDate::from_ymd_opt(2026, 11, 1),
         include_subagents: true,
         ..Default::default()
     };
     let rows = query_by_period(db.conn(), TimePeriod::Hourly, &filter, 30).unwrap();
-    let first_label = sqlite_local_hour(db.conn(), first);
-    let second_label = sqlite_local_hour(db.conn(), second);
-    assert_eq!(first_label, second_label);
+    let first_label = "2026-11-01 01:00";
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].period, first_label);
     assert_eq!(rows[0].request_count, 2);
