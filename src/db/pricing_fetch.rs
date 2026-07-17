@@ -5,7 +5,6 @@
 //! provider documentation change fails without replacing last-known-good data.
 
 use std::collections::HashSet;
-use std::io::Read;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -131,17 +130,20 @@ impl PricingSnapshot {
 }
 
 fn fetch_document(url: &str) -> Result<String> {
-    let response = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(20))
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(20)))
+        .user_agent(concat!("tkstat/", env!("CARGO_PKG_VERSION")))
         .build()
+        .into();
+    let mut response = agent
         .get(url)
-        .set("User-Agent", concat!("tkstat/", env!("CARGO_PKG_VERSION")))
         .call()
         .with_context(|| format!("fetching official pricing document {url}"))?;
-    let mut reader = response.into_reader().take(MAX_DOCUMENT_BYTES + 1);
-    let mut contents = String::new();
-    reader
-        .read_to_string(&mut contents)
+    let contents = response
+        .body_mut()
+        .with_config()
+        .limit(MAX_DOCUMENT_BYTES + 1)
+        .read_to_string()
         .with_context(|| format!("reading official pricing document {url}"))?;
     if contents.len() as u64 > MAX_DOCUMENT_BYTES {
         bail!("official pricing document {url} exceeds the 2 MiB safety limit");

@@ -6,11 +6,15 @@ Claude Code and Codex write session logs as JSONL files, but there's no built-in
 
 ## Install
 
+Download a prebuilt archive for macOS, Linux, or Windows from the
+[latest GitHub release](https://github.com/burritothief/tkstat/releases/latest), or install the
+current release with Cargo:
+
 ```
-cargo install --path .
+cargo install --git https://github.com/burritothief/tkstat --tag v0.4.2 --locked tkstat
 ```
 
-Or build from source:
+To build a local checkout from source:
 
 ```
 cargo build --release
@@ -213,7 +217,7 @@ Budget warnings are printed to stderr and use the active provider/model/project/
 
 Claude Code stores session logs under its projects directory. Codex stores session logs under its dated sessions directory. Each provider adapter normalizes its own token records into UTC instants in the local database.
 
-`tkstat` maintains a SQLite database (at `~/.local/share/tkstat/tkstat.db`) that caches parsed token records. On each run it checks which JSONL files have changed since the last read (by file size and mtime) and only parses the new bytes.
+`tkstat` maintains a SQLite database in the operating system's local data directory and caches parsed token records there. On each run it checks which JSONL files have changed since the last read (by file size and mtime) and only parses the new bytes.
 
 Normalized billing components remain the auditable source for cost calculation. A one-row-per-request materialized cost cache makes normal reports fast; ingestion prices only new requests, and an explicit pricing refresh reprices the affected provider. Full component and coverage validation runs during mutations and `--pricing-audit`, while mutation triggers ensure direct database corruption still fails closed.
 
@@ -233,7 +237,7 @@ tkstat --pricing-audit          # audit local pricing coverage
 tkstat --force-update           # full re-ingest
 ```
 
-The default database location is `~/.local/share/tkstat/tkstat.db`. You can also set the `TKSTAT_DB` environment variable.
+The default database is `tkstat/tkstat.db` under the platform's local data directory: typically `~/.local/share` on Linux, `~/Library/Application Support` on macOS, and `%LOCALAPPDATA%` on Windows. `tkstat --doctor` prints the resolved path. You can also set the `TKSTAT_DB` environment variable.
 
 Schema v15 stores provider plus exact model identity for every usage row, normalized billing components, effective-dated pricing, provider pricing generations, and materialized request costs. `token_usage.timestamp` and `pricing_intervals.effective_from` / `effective_to` are stored as canonical UTC RFC3339 instants. Provider ids are canonical storage keys (`claude-code`, `codex`); friendly CLI aliases such as `--provider claude` are normalized before querying. Because `tkstat` is pre-1.0, older schemas may rebuild or backfill derived caches during the first run after upgrade.
 
@@ -261,3 +265,9 @@ Cost-bearing reports fail closed when pricing coverage is missing. If you see an
 Set `TKSTAT_PROFILE=1` to print stage timings for CLI/configuration, database open, source synchronization, querying/rendering, and output.
 
 `--force-update` clears cached usage rows and file offsets, but keeps locally cached pricing intervals. If pricing was never seeded or refreshed, run one of the pricing commands before cost-bearing reports.
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and fixture-safety rules,
+[CHANGELOG.md](CHANGELOG.md) for release history, and [SECURITY.md](SECURITY.md) for reporting
+security issues.

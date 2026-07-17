@@ -58,12 +58,13 @@ run() {
 cd "$repo_root"
 
 run cargo fmt -- --check
-run cargo clippy --all-targets --all-features -- -D warnings
-run cargo test
+run cargo check --locked --all-targets --no-default-features
+run cargo clippy --locked --all-targets --all-features -- -D warnings
+run cargo test --locked
 
 if [[ "$skip_e2e" == "0" ]]; then
-  run "$script_dir/e2e_smoke.sh"
-  run "$script_dir/script_smoke.sh"
+  TKSTAT_PRICING_REFRESH_OFFLINE=1 run "$script_dir/e2e_smoke.sh"
+  TKSTAT_PRICING_REFRESH_OFFLINE=1 run "$script_dir/script_smoke.sh"
 fi
 
 printf 'tkstat development checks passed\n'

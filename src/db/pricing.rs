@@ -310,9 +310,15 @@ pub fn import_pricing_catalog_json(conn: &Connection, contents: &str) -> Result<
 pub fn upsert_source_metadata(conn: &Connection, source: &PricingSourceMetadata) -> Result<()> {
     validate_source_metadata(source)?;
     conn.execute(
-        "INSERT OR REPLACE INTO pricing_sources
+        "INSERT INTO pricing_sources
             (source, source_url, source_retrieved_at, catalog_version, source_kind, notes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(source) DO UPDATE SET
+            source_url = excluded.source_url,
+            source_retrieved_at = excluded.source_retrieved_at,
+            catalog_version = excluded.catalog_version,
+            source_kind = excluded.source_kind,
+            notes = excluded.notes",
         rusqlite::params![
             source.source,
             source.source_url,

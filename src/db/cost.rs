@@ -87,7 +87,7 @@ fn materialize_usage_costs(
         ));
     }
     let where_clause = if filters.is_empty() {
-        String::new()
+        "WHERE 1 = 1".to_string()
     } else {
         format!("WHERE {}", filters.join(" AND "))
     };
@@ -129,7 +129,7 @@ fn materialize_usage_costs(
              FROM component_matches
              GROUP BY usage_id
          )
-         INSERT OR REPLACE INTO usage_costs
+         INSERT INTO usage_costs
              (usage_id, cost_usd, status, pricing_generation, detail)
          SELECT u.id,
                 CASE
@@ -163,7 +163,12 @@ fn materialize_usage_costs(
          FROM token_usage u
          JOIN pricing_state ps ON ps.provider = u.provider
          LEFT JOIN usage_price up ON up.usage_id = u.id
-         {where_clause}"
+         {where_clause}
+         ON CONFLICT(usage_id) DO UPDATE SET
+            cost_usd = excluded.cost_usd,
+            status = excluded.status,
+            pricing_generation = excluded.pricing_generation,
+            detail = excluded.detail"
     );
     let param_refs: Vec<&dyn rusqlite::types::ToSql> =
         params.iter().map(|param| param.as_ref()).collect();
