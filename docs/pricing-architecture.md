@@ -23,11 +23,19 @@ Raw metadata alone is also insufficient as the cost source because it makes SQL 
 ## Table Roles
 
 - `token_usage`: deduplicated request-level usage and display aggregates. This table preserves provider, exact model id, timestamps, project/session metadata, and wide token totals for user-facing reports.
-- `usage_billing_components`: normalized priced line items derived from `token_usage` and provider logs. This is the planned cost source of truth for cost-bearing reports.
+- `usage_billing_components`: normalized priced line items derived from `token_usage` and provider logs. This is the canonical cost input.
 - `pricing_intervals`: effective-dated rates keyed by provider, model id, token category, currency, timestamp range, and pricing dimensions. This is the rate source of truth.
+- `usage_costs`: one derived row per usage request, tied to a provider pricing generation. Reports aggregate this cache; missing or ambiguous status still fails closed.
+- `pricing_state`: provider-local generation and dirty state used to invalidate materialized costs transactionally.
 
 ## Consequences
 
 Cost-bearing queries must validate coverage over the full component price key. Token-only reports may continue to work without pricing coverage. Pricing audit and doctor diagnostics should explain missing catalog coverage, stale source data, unsupported modifiers, and assumptions used for default dimensions.
 
+Full integrity and coverage scans run when derived data changes and during explicit audits, not on every successful report. SQLite mutation triggers mark pricing or component state dirty so out-of-band changes cannot silently reuse stale materialized costs.
+
 This architecture favors accuracy and explicit failures over silent zero cost, broad default matching, or provider-specific shortcuts.
+
+## Storage Engine
+
+SQLite remains the local storage engine. tkstat is a single-writer incremental cache that benefits from transactional uniqueness checks and point updates. The measured report latency came from dynamic pricing validation and timezone conversion rather than SQLite aggregation; materialized costs address that bottleneck without adopting DuckDB's less natural incremental-write model.

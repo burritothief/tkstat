@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 
 use crate::db::schema::insert_billing_components;
 use crate::db::{ensure_non_empty, u64_to_sql_i64};
@@ -15,13 +15,16 @@ pub fn batch_insert(conn: &Connection, records: &[TokenRecord]) -> Result<usize>
 
     let tx = conn.unchecked_transaction()?;
     let mut inserted = 0;
+    let mut inserted_id_range: Option<(i64, i64)> = None;
+    let integrity_was_dirty: bool = tx.query_row(
+        "SELECT billing_components_dirty != 0 FROM integrity_state WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )?;
 
     {
-        let mut duplicate_stmt = tx.prepare_cached(
-            "SELECT 1 FROM token_usage WHERE provider = ?1 AND request_id = ?2 LIMIT 1",
-        )?;
         let mut stmt = tx.prepare_cached(
-            "INSERT INTO token_usage
+            "INSERT OR IGNORE INTO token_usage
                 (provider, request_id, session_id, uuid, timestamp, model_family, model_id,
                  input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
                  cached_input_tokens, reasoning_output_tokens,
@@ -37,16 +40,6 @@ pub fn batch_insert(conn: &Connection, records: &[TokenRecord]) -> Result<usize>
 
         for r in records {
             validate_record(r)?;
-            let duplicate = duplicate_stmt
-                .query_row(rusqlite::params![r.provider.as_str(), r.request_id], |_| {
-                    Ok(())
-                })
-                .optional()?
-                .is_some();
-            if duplicate {
-                continue;
-            }
-
             let changed = stmt.execute(rusqlite::params![
                 r.provider.as_str(),
                 r.request_id,
@@ -66,10 +59,28 @@ pub fn batch_insert(conn: &Connection, records: &[TokenRecord]) -> Result<usize>
                 r.source_file,
                 r.is_subagent as i32,
             ])?;
+            if changed == 0 {
+                continue;
+            }
             let usage_id = tx.last_insert_rowid();
             insert_billing_components(&mut component_stmt, usage_id, r)?;
+            inserted_id_range = Some(match inserted_id_range {
+                Some((first, _)) => (first, usage_id),
+                None => (usage_id, usage_id),
+            });
             inserted += changed;
         }
+    }
+
+    if let Some((first, last)) = inserted_id_range {
+        crate::db::cost::reprice_usage_range(&tx, first, last)?;
+    }
+
+    if !integrity_was_dirty {
+        tx.execute(
+            "UPDATE integrity_state SET billing_components_dirty = 0 WHERE id = 1",
+            [],
+        )?;
     }
 
     tx.commit()?;

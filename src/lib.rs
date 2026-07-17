@@ -6,3 +6,4 @@ pub mod diagnostics;
 pub mod domain;
 pub mod ingest;
 pub mod render;
+pub mod timing;

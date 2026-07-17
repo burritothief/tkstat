@@ -237,17 +237,18 @@ pub fn sync_provider_with_report(
     }
 
     let files = adapter.discover()?;
+    let states = if force {
+        std::collections::HashMap::new()
+    } else {
+        db.get_file_states(provider)?
+    };
     let mut total_inserted = 0;
     let mut processed_files = 0;
     let mut parse_errors = 0;
     let mut findings = Vec::new();
 
     for file in &files {
-        let state = if force {
-            None
-        } else {
-            db.get_file_state(provider, &file.path)?
-        };
+        let state = states.get(&file.path).cloned();
 
         if let Some(ref st) = state
             && st.size_bytes >= 0

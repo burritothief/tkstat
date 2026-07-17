@@ -352,13 +352,7 @@ fn component(
 }
 
 fn normalize_claude_default_service_tier(value: Option<String>) -> Option<String> {
-    value.and_then(|value| {
-        if value.trim().eq_ignore_ascii_case("standard") {
-            None
-        } else {
-            Some(value)
-        }
-    })
+    value.filter(|value| !value.trim().eq_ignore_ascii_case("standard"))
 }
 
 fn normalize_claude_default_speed(value: Option<String>) -> Option<String> {

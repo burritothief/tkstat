@@ -18,26 +18,32 @@ pub enum ReportTimeZone {
 }
 
 impl ReportTimeZone {
-    pub fn sqlite_modifier_suffix(self) -> &'static str {
-        match self {
-            Self::Local => ", 'localtime'",
-            Self::Utc => "",
-        }
+    fn local_bucket(self, timestamp: &str, period: &str) -> Option<String> {
+        matches!(self, Self::Local).then(|| format!("tkstat_local_bucket({timestamp}, '{period}')"))
     }
 }
 
 impl TimePeriod {
     /// SQL expression to bucket stored UTC timestamps into the selected report timezone.
     pub fn sql_group_expr(&self, timezone: ReportTimeZone) -> String {
-        let suffix = timezone.sqlite_modifier_suffix();
+        if let Some(local) = timezone.local_bucket(
+            "timestamp",
+            match self {
+                Self::FiveMinutes => "five_minutes",
+                Self::Hourly => "hour",
+                Self::Daily => "day",
+                Self::Monthly => "month",
+                Self::Yearly => "year",
+            },
+        ) {
+            return local;
+        }
         match self {
-            Self::FiveMinutes => format!(
-                "strftime('%Y-%m-%d %H:', timestamp{suffix}) || printf('%02d', (cast(strftime('%M', timestamp{suffix}) as integer) / 5) * 5)"
-            ),
-            Self::Hourly => format!("strftime('%Y-%m-%d %H:00', timestamp{suffix})"),
+            Self::FiveMinutes => "strftime('%Y-%m-%d %H:', timestamp) || printf('%02d', (cast(strftime('%M', timestamp) as integer) / 5) * 5)".into(),
+            Self::Hourly => "strftime('%Y-%m-%d %H:00', timestamp)".into(),
             Self::Daily => day_sql_expr(timezone),
-            Self::Monthly => format!("strftime('%Y-%m', timestamp{suffix})"),
-            Self::Yearly => format!("strftime('%Y', timestamp{suffix})"),
+            Self::Monthly => "strftime('%Y-%m', timestamp)".into(),
+            Self::Yearly => "strftime('%Y', timestamp)".into(),
         }
     }
 
@@ -54,7 +60,9 @@ impl TimePeriod {
 }
 
 pub fn day_sql_expr(timezone: ReportTimeZone) -> String {
-    format!("date(timestamp{})", timezone.sqlite_modifier_suffix())
+    timezone
+        .local_bucket("timestamp", "day")
+        .unwrap_or_else(|| "date(timestamp)".into())
 }
 
 impl fmt::Display for TimePeriod {
@@ -104,13 +112,13 @@ mod tests {
             assert!(
                 period
                     .sql_group_expr(ReportTimeZone::Local)
-                    .contains("localtime")
+                    .contains("tkstat_local_bucket")
             );
         }
         assert_eq!(day_sql_expr(ReportTimeZone::Utc), "date(timestamp)");
         assert_eq!(
             day_sql_expr(ReportTimeZone::Local),
-            "date(timestamp, 'localtime')"
+            "tkstat_local_bucket(timestamp, 'day')"
         );
     }
 }

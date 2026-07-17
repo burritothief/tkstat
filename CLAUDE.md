@@ -50,7 +50,7 @@ src/
 - **Dedup by request_id**: Claude Code writes multiple JSONL entries per API request (streaming). We keep the one with the highest `output_tokens` per `request_id`. The DB uses `INSERT OR IGNORE` on `request_id` as PRIMARY KEY.
 - **memchr pre-filter**: Before deserializing each JSONL line, we check for `"type":"assistant"` with a raw byte scan. This skips ~60% of lines without touching serde.
 - **Gap-filling**: After SQL aggregation, missing time slots are filled with zero-rows so tables show continuous time series. The SQL fetches all matching rows (no LIMIT), gap-fills, then truncates to the requested limit from the end.
-- **Cost at ingest time**: `cost_usd` is computed from static pricing tables and stored per row. If pricing changes, `--force-update` re-ingests everything.
+- **Materialized cost**: normalized billing components and effective-dated intervals are authoritative. A generation-tagged one-row-per-request cost cache is updated for new usage and repriced per provider by `--pricing-refresh`.
 - **OutputMode enum**: CLI flags resolve to a single `OutputMode` variant, which is matched in main.rs. No implicit flag priority or silent conflicts.
 - **ChartMetric enum**: Uses `clap::ValueEnum` so invalid values are rejected at parse time with proper help text.
 - **Log-scale heatmap**: Heatmap colors use logarithmic normalization so low-usage days are still visually distinct from zero-usage days.
@@ -88,7 +88,7 @@ Claude Code logs live at `~/.claude/projects/*/UUID.jsonl`. Only `"type":"assist
 - No async. This is a sync CLI targeting <50ms response time.
 - Minimize allocations in hot paths. The JSONL parser processes thousands of lines — use `&[u8]` splitting and `memchr` pre-filtering.
 - Let SQLite do aggregation (`GROUP BY`, `SUM`). Don't fetch all rows into Rust and aggregate in-memory.
-- Pre-compute derived values at ingest time (e.g., `cost_usd`) so queries can just `SUM`.
+- Pre-compute derived values at ingest/refresh time so report queries can aggregate materialized rows directly.
 
 ### Dependencies
 

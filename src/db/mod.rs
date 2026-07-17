@@ -1,9 +1,14 @@
+pub mod cost;
 pub mod ingest;
+pub mod local_time;
 pub mod pricing;
+#[cfg(feature = "network-pricing")]
+pub mod pricing_fetch;
 pub mod query;
 pub mod schema;
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use rusqlite::Connection;
@@ -44,6 +49,7 @@ impl Database {
     }
 
     fn init(&self) -> Result<()> {
+        local_time::register_local_bucket_function(&self.conn)?;
         schema::run_migrations(&self.conn)?;
         Ok(())
     }
@@ -99,6 +105,24 @@ impl Database {
         }
     }
 
+    pub fn get_file_states(&self, provider: ProviderId) -> Result<HashMap<PathBuf, FileState>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT path, size_bytes, mtime_secs, last_byte_offset
+             FROM file_state WHERE provider = ?1",
+        )?;
+        let rows = stmt.query_map([provider.as_str()], |row| {
+            Ok((
+                PathBuf::from(row.get::<_, String>(0)?),
+                FileState {
+                    size_bytes: row.get(1)?,
+                    mtime_secs: row.get(2)?,
+                    last_byte_offset: row.get(3)?,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
+    }
+
     pub fn update_file_state(
         &self,
         provider: ProviderId,
@@ -125,9 +149,11 @@ impl Database {
 
     pub fn reset(&self) -> Result<()> {
         self.conn.execute_batch(
-            "DELETE FROM usage_billing_components;
+            "DELETE FROM usage_costs;
+             DELETE FROM usage_billing_components;
              DELETE FROM token_usage;
-             DELETE FROM file_state;",
+             DELETE FROM file_state;
+             UPDATE integrity_state SET billing_components_dirty = 0 WHERE id = 1;",
         )?;
         Ok(())
     }
@@ -183,6 +209,10 @@ mod tests {
             .unwrap();
         assert_eq!(state.size_bytes, 1024);
         assert_eq!(state.mtime_secs, 100000);
+        let states = db
+            .get_file_states(crate::domain::provider::ProviderId::ClaudeCode)
+            .unwrap();
+        assert_eq!(states.get(&path).unwrap().last_byte_offset, 1024);
     }
 
     #[test]
