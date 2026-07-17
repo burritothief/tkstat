@@ -10,6 +10,8 @@ pub enum ProviderId {
 }
 
 impl ProviderId {
+    pub const ALL: [Self; 2] = [Self::ClaudeCode, Self::Codex];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ClaudeCode => CLAUDE_CODE_PROVIDER,

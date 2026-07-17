@@ -1,4 +1,4 @@
-//! Provider-owned pricing document fetchers.
+//! Provider-owned pricing document loaders.
 //!
 //! Network access is explicit (`tkstat --pricing-refresh`) and feature-gated.
 //! Parsing deliberately targets small, identifiable Markdown structures so a
@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::db::pricing::{PricingFetcher, PricingSourceMetadata};
+use crate::db::pricing::{PricingSnapshot, PricingSourceMetadata};
 use crate::domain::pricing::{PricingDimensions, PricingInterval, TokenCategory};
 use crate::domain::provider::ProviderId;
 use crate::domain::timestamp::parse_canonical_utc_rfc3339;
@@ -24,14 +24,11 @@ pub const OPENAI_PRICING_URL: &str = "https://developers.openai.com/api/docs/pri
 
 const MAX_DOCUMENT_BYTES: u64 = 2 * 1024 * 1024;
 
-#[derive(Debug, Clone)]
-pub struct LivePricingFetcher {
-    intervals: Vec<PricingInterval>,
-    sources: Vec<PricingSourceMetadata>,
-}
+#[derive(Debug, Clone, Copy)]
+pub struct LivePricing;
 
-impl LivePricingFetcher {
-    pub fn fetch(provider: ProviderId) -> Result<Self> {
+impl LivePricing {
+    pub fn fetch(provider: ProviderId) -> Result<PricingSnapshot> {
         let retrieved_at = Utc::now().date_naive();
         match provider {
             ProviderId::ClaudeCode => {
@@ -50,34 +47,36 @@ impl LivePricingFetcher {
         pricing: &str,
         models: &str,
         retrieved_at: NaiveDate,
-    ) -> Result<Self> {
+    ) -> Result<PricingSnapshot> {
         let source = format!("provider:anthropic-pricing-{retrieved_at}");
         let intervals = parse_anthropic_pricing(pricing, models, retrieved_at, &source)?;
-        Ok(Self {
+        Ok(PricingSnapshot::new(
             intervals,
-            sources: vec![source_metadata(
+            vec![source_metadata(
                 source,
                 ANTHROPIC_PRICING_URL,
                 retrieved_at,
                 "Official Anthropic pricing and model-identity documents fetched by tkstat.",
             )],
-        })
+        ))
     }
 
-    pub fn from_openai_document(pricing: &str, retrieved_at: NaiveDate) -> Result<Self> {
+    pub fn from_openai_document(pricing: &str, retrieved_at: NaiveDate) -> Result<PricingSnapshot> {
         let source = format!("provider:openai-pricing-{retrieved_at}");
         let intervals = parse_openai_pricing(pricing, retrieved_at, &source)?;
-        Ok(Self {
+        Ok(PricingSnapshot::new(
             intervals,
-            sources: vec![source_metadata(
+            vec![source_metadata(
                 source,
                 OPENAI_PRICING_URL,
                 retrieved_at,
                 "Official OpenAI standard token-pricing document fetched by tkstat.",
             )],
-        })
+        ))
     }
+}
 
+impl PricingSnapshot {
     /// Backdate only brand-new exact pricing keys to their earliest observed
     /// usage. Existing keys keep retrieval-time effective dating so a provider
     /// price change is never applied retroactively.
@@ -128,16 +127,6 @@ impl LivePricingFetcher {
             }
         }
         Ok(self)
-    }
-}
-
-impl PricingFetcher for LivePricingFetcher {
-    fn fetch_current_prices(&self) -> Result<Vec<PricingInterval>> {
-        Ok(self.intervals.clone())
-    }
-
-    fn fetch_source_metadata(&self) -> Result<Vec<PricingSourceMetadata>> {
-        Ok(self.sources.clone())
     }
 }
 
@@ -589,7 +578,7 @@ mod tests {
 <Note>done</Note>
 "#;
         let models = "Claude API ID | claude-opus-4-8 | `claude-opus-4-8`";
-        let fetcher = LivePricingFetcher::from_anthropic_documents(
+        let fetcher = LivePricing::from_anthropic_documents(
             pricing,
             models,
             NaiveDate::from_ymd_opt(2026, 7, 15).unwrap(),
@@ -621,7 +610,7 @@ mod tests {
 | Claude Unknown 9 | $1 / MTok | $1 / MTok | $2 / MTok | $0.1 / MTok | $5 / MTok |
 <Note>done</Note>
 "#;
-        let err = LivePricingFetcher::from_anthropic_documents(
+        let err = LivePricing::from_anthropic_documents(
             pricing,
             "`claude-opus-4-8`",
             NaiveDate::from_ymd_opt(2026, 7, 15).unwrap(),
@@ -642,7 +631,7 @@ rows={[
 </div>
 <div data-content-switcher-pane data-value="batch">
 "#;
-        let fetcher = LivePricingFetcher::from_openai_document(
+        let fetcher = LivePricing::from_openai_document(
             pricing,
             NaiveDate::from_ymd_opt(2026, 7, 15).unwrap(),
         )
@@ -664,7 +653,7 @@ rows={[
 
     #[test]
     fn rejects_changed_openai_document_shape() {
-        let err = LivePricingFetcher::from_openai_document(
+        let err = LivePricing::from_openai_document(
             "# Pricing without structured rows",
             NaiveDate::from_ymd_opt(2026, 7, 15).unwrap(),
         )
@@ -710,7 +699,7 @@ rows={[
 </div>
 <div data-content-switcher-pane data-value="batch">
 "#;
-        let fetcher = LivePricingFetcher::from_openai_document(
+        let fetcher = LivePricing::from_openai_document(
             pricing,
             NaiveDate::from_ymd_opt(2026, 7, 15).unwrap(),
         )

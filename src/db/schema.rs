@@ -1,12 +1,107 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
+use crate::db::table_exists;
 use crate::domain::pricing::billable_usage_components;
 use crate::domain::provider::ProviderId;
 use crate::domain::timestamp::parse_canonical_utc_rfc3339;
 use crate::domain::usage::{ModelFamily, TokenRecord};
 
 pub const SCHEMA_VERSION: i64 = 15;
+
+struct MigrationPlan {
+    reset_usage_cache: bool,
+    migrate_provider_ids: bool,
+    migrate_pricing_dimensions: bool,
+    backfill_billing_components: bool,
+    message: Option<String>,
+}
+
+impl MigrationPlan {
+    fn from_version(version: Option<i64>) -> Option<Self> {
+        match version {
+            Some(version) if version >= SCHEMA_VERSION => None,
+            Some(version) if version >= 11 => Some(Self {
+                reset_usage_cache: false,
+                migrate_provider_ids: false,
+                migrate_pricing_dimensions: false,
+                backfill_billing_components: false,
+                message: Some(format!(
+                    "tkstat database schema {version} is older than {SCHEMA_VERSION}; normalizing default Claude pricing modifier dimensions."
+                )),
+            }),
+            Some(version) if version >= 10 => Some(Self {
+                reset_usage_cache: false,
+                migrate_provider_ids: false,
+                migrate_pricing_dimensions: false,
+                backfill_billing_components: false,
+                message: Some(format!(
+                    "tkstat database schema {version} is older than {SCHEMA_VERSION}; adding pricing source metadata."
+                )),
+            }),
+            Some(version) if version >= 9 => Some(Self {
+                reset_usage_cache: false,
+                migrate_provider_ids: true,
+                migrate_pricing_dimensions: true,
+                backfill_billing_components: false,
+                message: Some(format!(
+                    "tkstat database schema {version} is older than {SCHEMA_VERSION}; adding pricing modifier dimensions and source metadata."
+                )),
+            }),
+            Some(version) if version >= 8 => Some(Self {
+                reset_usage_cache: false,
+                migrate_provider_ids: true,
+                migrate_pricing_dimensions: true,
+                backfill_billing_components: true,
+                message: Some(format!(
+                    "tkstat database schema {version} is older than {SCHEMA_VERSION}; adding normalized billing components and pricing modifier dimensions for existing usage rows."
+                )),
+            }),
+            Some(version) => Some(Self {
+                reset_usage_cache: true,
+                migrate_provider_ids: true,
+                migrate_pricing_dimensions: true,
+                backfill_billing_components: true,
+                message: Some(format!(
+                    "tkstat database schema {version} is older than {SCHEMA_VERSION}; rebuilding usage cache. Run `tkstat --force-update` if you need to force a clean reingest, and run `tkstat --pricing-seed` or `tkstat --pricing-refresh` if pricing is missing."
+                )),
+            }),
+            None => Some(Self {
+                reset_usage_cache: false,
+                migrate_provider_ids: false,
+                migrate_pricing_dimensions: false,
+                backfill_billing_components: false,
+                message: None,
+            }),
+        }
+    }
+
+    fn execute(self, conn: &Connection) -> Result<()> {
+        if let Some(message) = self.message {
+            eprintln!("{message}");
+        }
+        if self.reset_usage_cache {
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS usage_billing_components;
+                 DROP TABLE IF EXISTS token_usage;
+                 DROP TABLE IF EXISTS file_state;",
+            )?;
+        }
+        if self.migrate_provider_ids {
+            migrate_provider_ids(conn)?;
+        }
+        if self.migrate_pricing_dimensions {
+            migrate_pricing_dimensions(conn)?;
+        }
+        create_tables(conn)?;
+        if self.backfill_billing_components {
+            backfill_usage_billing_components(conn)?;
+        }
+        normalize_default_claude_billing_component_dimensions(conn)?;
+        crate::db::cost::reprice_all_usage(conn)?;
+        set_version(conn, SCHEMA_VERSION)
+    }
+}
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -26,75 +121,8 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         })
         .ok();
 
-    match current {
-        Some(v) if v >= SCHEMA_VERSION => {}
-        Some(v) if v >= 11 => {
-            eprintln!(
-                "tkstat database schema {v} is older than {SCHEMA_VERSION}; normalizing default Claude pricing modifier dimensions."
-            );
-            create_tables(&tx)?;
-            normalize_default_claude_billing_component_dimensions(&tx)?;
-            crate::db::cost::reprice_all_usage(&tx)?;
-            set_version(&tx, SCHEMA_VERSION)?;
-        }
-        Some(v) if v >= 10 => {
-            eprintln!(
-                "tkstat database schema {v} is older than {SCHEMA_VERSION}; adding pricing source metadata."
-            );
-            create_tables(&tx)?;
-            normalize_default_claude_billing_component_dimensions(&tx)?;
-            crate::db::cost::reprice_all_usage(&tx)?;
-            set_version(&tx, SCHEMA_VERSION)?;
-        }
-        Some(v) if v >= 9 => {
-            eprintln!(
-                "tkstat database schema {v} is older than {SCHEMA_VERSION}; adding pricing modifier dimensions and source metadata."
-            );
-            migrate_provider_ids(&tx)?;
-            migrate_pricing_dimensions(&tx)?;
-            create_tables(&tx)?;
-            normalize_default_claude_billing_component_dimensions(&tx)?;
-            crate::db::cost::reprice_all_usage(&tx)?;
-            set_version(&tx, SCHEMA_VERSION)?;
-        }
-        Some(v) if v >= 8 => {
-            eprintln!(
-                "tkstat database schema {v} is older than {SCHEMA_VERSION}; adding normalized billing components and pricing modifier dimensions for existing usage rows."
-            );
-            migrate_provider_ids(&tx)?;
-            migrate_pricing_dimensions(&tx)?;
-            create_tables(&tx)?;
-            backfill_usage_billing_components(&tx)?;
-            normalize_default_claude_billing_component_dimensions(&tx)?;
-            crate::db::cost::reprice_all_usage(&tx)?;
-            set_version(&tx, SCHEMA_VERSION)?;
-        }
-        Some(v) => {
-            eprintln!(
-                "tkstat database schema {v} is older than {SCHEMA_VERSION}; rebuilding usage cache. Run `tkstat --force-update` if you need to force a clean reingest, and run `tkstat --pricing-seed` or `tkstat --pricing-refresh` if pricing is missing."
-            );
-            // Drop old tables and recreate (pre-1.0, no migration path needed)
-            tx.execute_batch(
-                "DROP TABLE IF EXISTS usage_billing_components;
-                 DROP TABLE IF EXISTS token_usage;
-                 DROP TABLE IF EXISTS file_state;",
-            )?;
-            migrate_provider_ids(&tx)?;
-            migrate_pricing_dimensions(&tx)?;
-            create_tables(&tx)?;
-            backfill_usage_billing_components(&tx)?;
-            normalize_default_claude_billing_component_dimensions(&tx)?;
-            crate::db::cost::reprice_all_usage(&tx)?;
-            set_version(&tx, SCHEMA_VERSION)?;
-        }
-        None => {
-            create_tables(&tx)?;
-            migrate_provider_ids(&tx)?;
-            backfill_usage_billing_components(&tx)?;
-            normalize_default_claude_billing_component_dimensions(&tx)?;
-            crate::db::cost::reprice_all_usage(&tx)?;
-            set_version(&tx, SCHEMA_VERSION)?;
-        }
+    if let Some(plan) = MigrationPlan::from_version(current) {
+        plan.execute(&tx)?;
     }
 
     tx.commit()?;
@@ -170,15 +198,6 @@ fn pricing_intervals_has_dimensions(conn: &Connection) -> Result<bool> {
     ]
     .iter()
     .all(|column| columns.iter().any(|existing| existing == column)))
-}
-
-fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
-        [table],
-        |row| row.get(0),
-    )?;
-    Ok(count > 0)
 }
 
 fn create_tables(conn: &Connection) -> Result<()> {
@@ -462,11 +481,11 @@ pub(crate) fn insert_billing_components(
             crate::domain::timestamp::format_utc_rfc3339(component.timestamp),
             component.token_category.as_str(),
             crate::db::u64_to_sql_i64("billing component tokens", component.tokens)?,
-            component.service_tier,
-            component.speed,
-            component.region,
-            component.processing_mode,
-            component.source_detail,
+            component.dimensions.service_tier,
+            component.dimensions.speed,
+            component.dimensions.region,
+            component.dimensions.processing_mode,
+            component.dimensions.source_detail,
             idx as i64,
         ])?;
     }
