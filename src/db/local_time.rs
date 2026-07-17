@@ -13,7 +13,19 @@ enum ReportTimeZone {
 }
 
 pub fn register_local_bucket_function(conn: &Connection) -> Result<()> {
-    let timezone = Arc::new(resolve_timezone());
+    register_bucket_function(conn, resolve_timezone())
+}
+
+#[cfg(test)]
+pub(crate) fn register_local_bucket_function_for_timezone(
+    conn: &Connection,
+    timezone: Tz,
+) -> Result<()> {
+    register_bucket_function(conn, ReportTimeZone::Iana(timezone))
+}
+
+fn register_bucket_function(conn: &Connection, timezone: ReportTimeZone) -> Result<()> {
+    let timezone = Arc::new(timezone);
     conn.create_scalar_function(
         "tkstat_local_bucket",
         2,
