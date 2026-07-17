@@ -50,8 +50,7 @@ fn parse_file_metadata(path: &Path) -> Option<SourceFile> {
         .as_secs() as i64;
 
     let is_subagent = path.components().any(|c| c.as_os_str() == "subagents");
-    let path_str = path.to_string_lossy();
-    let project_name = extract_project_name(&path_str);
+    let project_name = extract_project_name(path);
 
     Some(SourceFile {
         path: path.to_path_buf(),
@@ -65,27 +64,35 @@ fn parse_file_metadata(path: &Path) -> Option<SourceFile> {
 /// Derive a human-readable project name from the Claude projects directory name.
 /// "-Users-alice-src-myapp" → "myapp"
 /// "-Users-alice-src-my-project" → "my-project"
-fn extract_project_name(path_str: &str) -> String {
-    if let Some(idx) = path_str.find("/projects/") {
-        let after = &path_str[idx + "/projects/".len()..];
-        let dir_name = after.split('/').next().unwrap_or("");
-        let parts: Vec<&str> = dir_name.split('-').collect();
-
-        if let Some(pos) = parts.iter().rposition(|&p| p == "src") {
-            let slug_parts = &parts[pos + 1..];
-            if !slug_parts.is_empty() {
-                return slug_parts.join("-");
-            }
+fn extract_project_name(path: &Path) -> String {
+    let mut components = path.components();
+    while let Some(component) = components.next() {
+        if component.as_os_str() == "projects"
+            && let Some(project_dir) = components.next()
+        {
+            let dir_name = project_dir.as_os_str().to_string_lossy();
+            return project_name_from_dir(&dir_name);
         }
-
-        if let Some(last) = parts.iter().rev().find(|p| !p.is_empty()) {
-            return last.to_string();
-        }
-
-        return dir_name.to_string();
     }
 
     "unknown".to_string()
+}
+
+fn project_name_from_dir(dir_name: &str) -> String {
+    let parts: Vec<&str> = dir_name.split('-').collect();
+
+    if let Some(pos) = parts.iter().rposition(|&p| p == "src") {
+        let slug_parts = &parts[pos + 1..];
+        if !slug_parts.is_empty() {
+            return slug_parts.join("-");
+        }
+    }
+
+    if let Some(last) = parts.iter().rev().find(|p| !p.is_empty()) {
+        return last.to_string();
+    }
+
+    dir_name.to_string()
 }
 
 #[cfg(test)]
@@ -95,30 +102,39 @@ mod tests {
     #[test]
     fn test_extract_project_name_src_path() {
         let path = "/home/alice/.claude/projects/-Users-alice-src-myapp/abc.jsonl";
-        assert_eq!(extract_project_name(path), "myapp");
+        assert_eq!(extract_project_name(Path::new(path)), "myapp");
     }
 
     #[test]
     fn test_extract_project_name_nested_src() {
         let path = "/home/alice/.claude/projects/-Users-alice-src-my-project/abc.jsonl";
-        assert_eq!(extract_project_name(path), "my-project");
+        assert_eq!(extract_project_name(Path::new(path)), "my-project");
     }
 
     #[test]
     fn test_extract_project_name_no_src() {
         let path = "/home/alice/.claude/projects/-Users-alice-dotfiles/abc.jsonl";
-        assert_eq!(extract_project_name(path), "dotfiles");
+        assert_eq!(extract_project_name(Path::new(path)), "dotfiles");
     }
 
     #[test]
     fn test_extract_project_name_no_projects() {
         let path = "/some/other/path/file.jsonl";
-        assert_eq!(extract_project_name(path), "unknown");
+        assert_eq!(extract_project_name(Path::new(path)), "unknown");
     }
 
     #[test]
     fn test_extract_project_name_deep_path() {
         let path = "/home/alice/.claude/projects/-Users-alice-src-data-apps/abc.jsonl";
-        assert_eq!(extract_project_name(path), "data-apps");
+        assert_eq!(extract_project_name(Path::new(path)), "data-apps");
+    }
+
+    #[test]
+    fn test_extract_project_name_uses_native_path_components() {
+        let path = PathBuf::from("root")
+            .join("projects")
+            .join("-Users-alice-src-cross-platform")
+            .join("abc.jsonl");
+        assert_eq!(extract_project_name(&path), "cross-platform");
     }
 }
