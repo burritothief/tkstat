@@ -122,6 +122,13 @@ Schema version is tracked in a `schema_version` table. When the version changes,
 
 The `total_tokens` column is `GENERATED ALWAYS AS (...) STORED` — never write to it directly.
 
+## Version Control
+
+- Prefer Jujutsu (`jj`) over Git whenever `jj` is available. This project uses a colocated Jujutsu/Git checkout. For an existing Git checkout without `.jj`, run `jj git init --colocate` first.
+- Use `jj status`, `jj diff`, `jj log`, and `jj commit` for routine work. Fall back to Git when `jj` is unavailable or an operation is not supported by Jujutsu.
+- Use `jj git fetch --remote origin` to fetch. Track the relevant remote bookmark with `jj bookmark track <name>@origin`, move the local bookmark to the completed revision, and push it explicitly with `jj git push --remote origin --bookmark <name>`.
+- Run the required build, test, and Clippy checks explicitly before committing with `jj`; do not rely on Git commit hooks to run them.
+
 ## Commit Style
 
 - Write commits in imperative mood: "Add heatmap renderer" not "Added heatmap renderer".
