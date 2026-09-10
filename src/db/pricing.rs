@@ -119,6 +119,57 @@ impl PricingSnapshot {
     pub fn sources(&self) -> &[PricingSourceMetadata] {
         &self.sources
     }
+    /// Backdate only brand-new exact pricing keys to their earliest observed
+    /// usage. Existing keys keep retrieval-time effective dating so a provider
+    /// price change is never applied retroactively.
+    pub fn cover_unpriced_observed_usage(mut self, conn: &rusqlite::Connection) -> Result<Self> {
+        for interval in &mut self.intervals {
+            let existing: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pricing_intervals
+                 WHERE provider = ?1 AND model_id = ?2 AND token_category = ?3
+                   AND service_tier IS ?4 AND speed IS ?5 AND region IS ?6
+                   AND processing_mode IS ?7 AND source_detail IS ?8 AND currency = 'USD'",
+                rusqlite::params![
+                    interval.provider.as_str(),
+                    interval.model_id,
+                    interval.token_category.as_str(),
+                    interval.dimensions.service_tier,
+                    interval.dimensions.speed,
+                    interval.dimensions.region,
+                    interval.dimensions.processing_mode,
+                    interval.dimensions.source_detail,
+                ],
+                |row| row.get(0),
+            )?;
+            if existing > 0 {
+                continue;
+            }
+            let earliest: Option<String> = conn.query_row(
+                "SELECT MIN(timestamp) FROM usage_billing_components
+                 WHERE provider = ?1 AND model_id = ?2 AND token_category = ?3
+                   AND service_tier IS ?4 AND speed IS ?5 AND region IS ?6
+                   AND processing_mode IS ?7 AND source_detail IS ?8",
+                rusqlite::params![
+                    interval.provider.as_str(),
+                    interval.model_id,
+                    interval.token_category.as_str(),
+                    interval.dimensions.service_tier,
+                    interval.dimensions.speed,
+                    interval.dimensions.region,
+                    interval.dimensions.processing_mode,
+                    interval.dimensions.source_detail,
+                ],
+                |row| row.get(0),
+            )?;
+            if let Some(earliest) = earliest {
+                let earliest = parse_canonical_utc_rfc3339(&earliest)?;
+                if earliest < interval.effective_from {
+                    interval.effective_from = earliest;
+                }
+            }
+        }
+        Ok(self)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -238,7 +289,7 @@ pub fn insert_interval_if_missing(conn: &Connection, interval: &PricingInterval)
 }
 
 pub fn seed_pricing(conn: &Connection) -> Result<usize> {
-    let snapshot = bundled_pricing_snapshot()?;
+    let snapshot = bundled_pricing_snapshot()?.cover_unpriced_observed_usage(conn)?;
     apply_pricing_snapshot(conn, &snapshot, ApplyMode::Seed)
 }
 
@@ -284,7 +335,34 @@ fn apply_pricing_snapshot(
     let mut changed = 0;
     for interval in &snapshot.intervals {
         changed += match mode {
-            ApplyMode::Seed => usize::from(insert_interval_if_missing(&tx, interval)?),
+            ApplyMode::Seed => {
+                // Seed only missing exact keys. An earlier backdated seed or a
+                // later provider refresh must not gain an overlapping fallback.
+                let exists: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pricing_intervals
+                     WHERE provider = ?1 AND model_id = ?2 AND token_category = ?3
+                       AND service_tier IS ?4 AND speed IS ?5 AND region IS ?6
+                       AND processing_mode IS ?7 AND source_detail IS ?8
+                       AND currency = ?9)",
+                    rusqlite::params![
+                        interval.provider.as_str(),
+                        interval.model_id,
+                        interval.token_category.as_str(),
+                        interval.dimensions.service_tier,
+                        interval.dimensions.speed,
+                        interval.dimensions.region,
+                        interval.dimensions.processing_mode,
+                        interval.dimensions.source_detail,
+                        interval.currency,
+                    ],
+                    |row| row.get(0),
+                )?;
+                if exists {
+                    0
+                } else {
+                    usize::from(insert_interval_if_missing(&tx, interval)?)
+                }
+            }
             ApplyMode::Refresh => upsert_current_interval(&tx, interval)?,
         };
     }
@@ -1645,6 +1723,14 @@ pub fn validate_interval(interval: &PricingInterval) -> Result<()> {
             interval.model_id,
             interval.token_category
         ));
+    }
+    if !interval.rate_per_1m_tokens.is_finite() {
+        bail!(
+            "non-finite price for provider={}, model={}, category={}",
+            interval.provider,
+            interval.model_id,
+            interval.token_category
+        );
     }
     for (field, value) in [
         ("service_tier", interval.dimensions.service_tier.as_deref()),

@@ -19,6 +19,18 @@
       "url": "https://developers.openai.com/api/docs/pricing",
       "retrieved_at": "2026-07-01",
       "notes": "Manual snapshot of GPT-5.6 Sol input, cached input, and output prices from the official OpenAI API pricing guide. Reasoning output is tracked as output-priced policy metadata."
+    },
+    {
+      "id": "anthropic-claude-pricing-2026-09-10",
+      "url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrieved_at": "2026-09-10",
+      "notes": "Reviewed model-specific standard rates, both cache-write TTLs and US inference (1.1x). Exact IDs and release dates checked against https://platform.claude.com/docs/en/models/overview and the linked individual model pages, including Mythos 5 and 5.1. Fable/Mythos 5.1 cache reads cost $0.25/MTok; Sonnet 5 remains $2/$10 after August 31."
+    },
+    {
+      "id": "openai-pricing-2026-09-10",
+      "url": "https://developers.openai.com/api/docs/pricing",
+      "retrieved_at": "2026-09-10",
+      "notes": "Reviewed standard short-context input, cached input and output rates for newer Codex models. Retrieval date is the effective date; seeding or refreshing can extend previously unpriced exact keys to observed usage. Codex logs currently do not expose separately billed cache writes or a context-pricing dimension; these remain base-rate estimates."
     }
   ],
   "entries": [
@@ -266,6 +278,728 @@
         "reasoning_output": 30.0
       },
       "notes": "GPT-5.6 Sol standard-processing pricing. The effective date matches the model announcement date."
+    },
+    {
+      "provider": "codex",
+      "model_ids": [
+        "gpt-6-astra"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-09-10T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:openai-pricing-2026-09-10",
+      "source_ref": "openai-pricing-2026-09-10",
+      "dimensions": {
+        "processing_mode": "standard"
+      },
+      "rates_per_1m_tokens": {
+        "input": 10.0,
+        "cached_input": 1.0,
+        "output": 50.0,
+        "reasoning_output": 50.0
+      },
+      "notes": "Standard short-context token pricing reviewed on the retrieval date. Reasoning tokens are included in output, not charged twice."
+    },
+    {
+      "provider": "codex",
+      "model_ids": [
+        "gpt-5.6-terra"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-09-10T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:openai-pricing-2026-09-10",
+      "source_ref": "openai-pricing-2026-09-10",
+      "dimensions": {
+        "processing_mode": "standard"
+      },
+      "rates_per_1m_tokens": {
+        "input": 2.0,
+        "cached_input": 0.2,
+        "output": 12.0,
+        "reasoning_output": 12.0
+      },
+      "notes": "Standard short-context token pricing reviewed on the retrieval date. Reasoning tokens are included in output, not charged twice."
+    },
+    {
+      "provider": "codex",
+      "model_ids": [
+        "gpt-5.6-luna"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-09-10T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:openai-pricing-2026-09-10",
+      "source_ref": "openai-pricing-2026-09-10",
+      "dimensions": {
+        "processing_mode": "standard"
+      },
+      "rates_per_1m_tokens": {
+        "input": 0.2,
+        "cached_input": 0.02,
+        "output": 1.2,
+        "reasoning_output": 1.2
+      },
+      "notes": "Standard short-context token pricing reviewed on the retrieval date. Reasoning tokens are included in output, not charged twice."
+    },
+    {
+      "provider": "codex",
+      "model_ids": [
+        "gpt-5.4-mini"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-09-10T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:openai-pricing-2026-09-10",
+      "source_ref": "openai-pricing-2026-09-10",
+      "dimensions": {
+        "processing_mode": "standard"
+      },
+      "rates_per_1m_tokens": {
+        "input": 0.75,
+        "cached_input": 0.075,
+        "output": 4.5,
+        "reasoning_output": 4.5
+      },
+      "notes": "Standard short-context token pricing reviewed on the retrieval date. Reasoning tokens are included in output, not charged twice."
+    },
+    {
+      "provider": "codex",
+      "model_ids": [
+        "gpt-5.3-codex"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-09-10T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:openai-pricing-2026-09-10",
+      "source_ref": "openai-pricing-2026-09-10",
+      "dimensions": {
+        "processing_mode": "standard"
+      },
+      "rates_per_1m_tokens": {
+        "input": 1.75,
+        "cached_input": 0.175,
+        "output": 14.0,
+        "reasoning_output": 14.0
+      },
+      "notes": "Standard short-context token pricing reviewed on the retrieval date. Reasoning tokens are included in output, not charged twice."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-opus-4-8"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-05-28T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {},
+      "rates_per_1m_tokens": {
+        "input": 5.0,
+        "output": 25.0,
+        "cache_creation": 6.25,
+        "cache_read": 0.5
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-opus-4-8"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-05-28T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 6.25
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-opus-4-8"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-05-28T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 10.0
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-opus-4-8"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-05-28T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "region": "us"
+      },
+      "rates_per_1m_tokens": {
+        "input": 5.5,
+        "output": 27.5,
+        "cache_creation": 6.875,
+        "cache_read": 0.55
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-opus-4-8"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-05-28T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 6.875
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-opus-4-8"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-05-28T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 11.0
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-opus-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-07-24T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {},
+      "rates_per_1m_tokens": {
+        "input": 5.0,
+        "output": 25.0,
+        "cache_creation": 6.25,
+        "cache_read": 0.5
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-opus-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-07-24T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 6.25
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-opus-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-07-24T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 10.0
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-opus-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-07-24T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "region": "us"
+      },
+      "rates_per_1m_tokens": {
+        "input": 5.5,
+        "output": 27.5,
+        "cache_creation": 6.875,
+        "cache_read": 0.55
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-opus-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-07-24T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 6.875
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-opus-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-07-24T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 11.0
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-sonnet-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-06-30T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {},
+      "rates_per_1m_tokens": {
+        "input": 2.0,
+        "output": 10.0,
+        "cache_creation": 2.5,
+        "cache_read": 0.2
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-sonnet-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-06-30T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 2.5
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-sonnet-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-06-30T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 4.0
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-sonnet-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-06-30T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "region": "us"
+      },
+      "rates_per_1m_tokens": {
+        "input": 2.2,
+        "output": 11.0,
+        "cache_creation": 2.75,
+        "cache_read": 0.22
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-sonnet-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-06-30T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 2.75
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-sonnet-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-06-30T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 4.4
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5",
+        "claude-mythos-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-06-09T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {},
+      "rates_per_1m_tokens": {
+        "input": 10.0,
+        "output": 50.0,
+        "cache_creation": 12.5,
+        "cache_read": 1.0
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5",
+        "claude-mythos-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-06-09T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 12.5
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5",
+        "claude-mythos-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-06-09T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 20.0
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5",
+        "claude-mythos-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-06-09T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "region": "us"
+      },
+      "rates_per_1m_tokens": {
+        "input": 11.0,
+        "output": 55.0,
+        "cache_creation": 13.75,
+        "cache_read": 1.1
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5",
+        "claude-mythos-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-06-09T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 13.75
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5",
+        "claude-mythos-5"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-06-09T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 22.0
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5-1",
+        "claude-mythos-5-1"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-09-01T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {},
+      "rates_per_1m_tokens": {
+        "input": 10.0,
+        "output": 50.0,
+        "cache_creation": 12.5,
+        "cache_read": 0.25
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5-1",
+        "claude-mythos-5-1"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-09-01T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 12.5
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5-1",
+        "claude-mythos-5-1"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-09-01T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 20.0
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5-1",
+        "claude-mythos-5-1"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-09-01T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "region": "us"
+      },
+      "rates_per_1m_tokens": {
+        "input": 11.0,
+        "output": 55.0,
+        "cache_creation": 13.75,
+        "cache_read": 0.275
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5-1",
+        "claude-mythos-5-1"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-09-01T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 13.75
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5-1",
+        "claude-mythos-5-1"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-09-01T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-09-10",
+      "source_ref": "anthropic-claude-pricing-2026-09-10",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 22.0
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
     }
   ]
 }

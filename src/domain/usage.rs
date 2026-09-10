@@ -10,6 +10,8 @@ pub enum ModelFamily {
     Opus,
     Sonnet,
     Haiku,
+    Fable,
+    Mythos,
     Unknown,
 }
 
@@ -22,6 +24,10 @@ impl ModelFamily {
             Self::Sonnet
         } else if s.contains("haiku") {
             Self::Haiku
+        } else if s.contains("fable") {
+            Self::Fable
+        } else if s.contains("mythos") {
+            Self::Mythos
         } else {
             Self::Unknown
         }
@@ -32,6 +38,8 @@ impl ModelFamily {
             Self::Opus => "opus",
             Self::Sonnet => "sonnet",
             Self::Haiku => "haiku",
+            Self::Fable => "fable",
+            Self::Mythos => "mythos",
             Self::Unknown => "unknown",
         }
     }
@@ -51,6 +59,8 @@ impl std::str::FromStr for ModelFamily {
             "opus" => Ok(Self::Opus),
             "sonnet" => Ok(Self::Sonnet),
             "haiku" => Ok(Self::Haiku),
+            "fable" => Ok(Self::Fable),
+            "mythos" => Ok(Self::Mythos),
             _ => Err(format!("unknown model family '{s}'")),
         }
     }
@@ -185,6 +195,24 @@ mod tests {
             ModelFamily::Sonnet
         );
         assert!("gpt-4".parse::<ModelFamily>().is_err());
+    }
+
+    #[test]
+    fn test_new_claude_families() {
+        for (name, family) in [
+            ("fable", ModelFamily::Fable),
+            ("mythos", ModelFamily::Mythos),
+        ] {
+            assert_eq!(ModelFamily::classify(&format!("claude-{name}-5-1")), family);
+            assert_eq!(name.to_uppercase().parse::<ModelFamily>().unwrap(), family);
+            assert_eq!(family.to_string(), name);
+        }
+        assert_eq!(ModelFamily::classify("claude-opus-5"), ModelFamily::Opus);
+        assert_eq!(
+            ModelFamily::classify("claude-sonnet-5"),
+            ModelFamily::Sonnet
+        );
+        assert_eq!(ModelFamily::classify("gpt-6-astra"), ModelFamily::Unknown);
     }
 
     #[test]

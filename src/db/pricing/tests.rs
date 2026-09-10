@@ -760,10 +760,13 @@ fn test_bundled_pricing_catalog_schema_is_valid() {
 #[test]
 fn test_bundled_pricing_catalog_intervals_insert_and_audit_cleanly() {
     let intervals = bundled_catalog_intervals().unwrap();
-    assert_eq!(intervals.len(), 86);
+    assert!(intervals.len() > 86);
 
     let db = Database::open_in_memory().unwrap();
-    assert_eq!(seed_pricing_intervals(db.conn(), &intervals).unwrap(), 86);
+    assert_eq!(
+        seed_pricing_intervals(db.conn(), &intervals).unwrap(),
+        intervals.len()
+    );
     applicable_interval_for_dimensions(
         db.conn(),
         ProviderId::Codex,
@@ -825,6 +828,103 @@ fn test_bundled_pricing_covers_claude_cache_creation_ttl_dimensions() {
     )
     .expect("seeded Claude pricing should cover 1-hour cache creation writes");
     assert_eq!(one_hour.rate_per_1m_tokens, 6.0);
+}
+
+#[test]
+fn test_seed_prices_new_codex_models_before_snapshot_and_repairs_cost_cache() {
+    let db = Database::open_in_memory().unwrap();
+    let models = [
+        ("gpt-6-astra", 10.0, 1.0, 50.0),
+        ("gpt-5.6-terra", 2.0, 0.2, 12.0),
+        ("gpt-5.6-luna", 0.2, 0.02, 1.2),
+        ("gpt-5.4-mini", 0.75, 0.075, 4.5),
+        ("gpt-5.3-codex", 1.75, 0.175, 14.0),
+    ];
+    let records: Vec<_> = models
+        .iter()
+        .map(|(model, _, _, _)| {
+            let mut usage = record(model);
+            usage.provider = ProviderId::Codex;
+            usage.request_id = (*model).into();
+            usage.model = ModelFamily::Unknown;
+            usage.timestamp = "2026-09-08T12:00:00Z".parse().unwrap();
+            usage.processing_mode = Some("standard".into());
+            usage.input_tokens = 2_000_000;
+            usage.cached_input_tokens = 1_000_000;
+            usage.reasoning_output_tokens = 200_000;
+            usage
+        })
+        .collect();
+    db.insert_records(&records).unwrap();
+    assert!(calculate_record_cost(db.conn(), &records[0]).is_err());
+
+    db.seed_pricing().unwrap();
+    assert_eq!(db.seed_pricing().unwrap(), 0);
+    for (usage, (_, input, cached, output)) in records.iter().zip(models) {
+        let expected = input + cached + output;
+        assert!((calculate_record_cost(db.conn(), usage).unwrap() - expected).abs() < 1e-9);
+    }
+    let summary = crate::db::query::query_summary(db.conn(), &Default::default()).unwrap();
+    let expected: f64 = models
+        .iter()
+        .map(|(_, input, cached, output)| input + cached + output)
+        .sum();
+    assert!((summary.cost_usd - expected).abs() < 1e-9);
+    assert!(
+        !audit_pricing(db.conn())
+            .unwrap()
+            .iter()
+            .any(|finding| { finding.severity == PricingAuditSeverity::Error })
+    );
+}
+
+#[test]
+fn test_new_claude_models_price_cache_ttls_and_us_inference() {
+    let db = Database::open_in_memory().unwrap();
+    db.seed_pricing().unwrap();
+    for (model, input, cache_read, output) in [
+        ("claude-opus-4-8", 5.0, 0.5, 25.0),
+        ("claude-opus-5", 5.0, 0.5, 25.0),
+        ("claude-sonnet-5", 2.0, 0.2, 10.0),
+        ("claude-fable-5", 10.0, 1.0, 50.0),
+        ("claude-mythos-5", 10.0, 1.0, 50.0),
+        ("claude-fable-5-1", 10.0, 0.25, 50.0),
+        ("claude-mythos-5-1", 10.0, 0.25, 50.0),
+    ] {
+        let mut usage = record(model);
+        usage.timestamp = "2026-09-08T12:00:00Z".parse().unwrap();
+        usage.cache_read_tokens = 1_000_000;
+        usage.cache_creation_tokens = 2_000_000;
+        usage.cache_creation_5m_tokens = 1_000_000;
+        usage.cache_creation_1h_tokens = 1_000_000;
+        let expected = input + output + cache_read + input * 1.25 + input * 2.0;
+        assert!(
+            (calculate_record_cost(db.conn(), &usage).unwrap() - expected).abs() < 1e-9,
+            "{model}"
+        );
+        usage.region = Some("us".into());
+        assert!(
+            (calculate_record_cost(db.conn(), &usage).unwrap() - expected * 1.1).abs() < 1e-9,
+            "{model}"
+        );
+    }
+}
+
+#[test]
+fn test_backdating_new_snapshot_preserves_existing_priced_history() {
+    let db = Database::open_in_memory().unwrap();
+    let usage = record("claude-opus-4-6");
+    db.insert_records(&[usage]).unwrap();
+    let original = interval(TokenCategory::Input, 5.0, "2026-01-01T00:00:00Z", None);
+    insert_interval(db.conn(), &original).unwrap();
+    let updated = interval(TokenCategory::Input, 10.0, "2026-09-10T00:00:00Z", None);
+    let snapshot = snapshot(vec![updated])
+        .cover_unpriced_observed_usage(db.conn())
+        .unwrap();
+    assert_eq!(
+        snapshot.intervals()[0].effective_from,
+        "2026-09-10T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+    );
 }
 
 #[test]

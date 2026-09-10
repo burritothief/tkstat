@@ -10,10 +10,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::db::pricing::{PricingSnapshot, PricingSourceMetadata};
+use crate::db::pricing::{PricingSnapshot, PricingSourceMetadata, bundled_pricing_snapshot};
 use crate::domain::pricing::{PricingDimensions, PricingInterval, TokenCategory};
 use crate::domain::provider::ProviderId;
-use crate::domain::timestamp::parse_canonical_utc_rfc3339;
 
 pub const ANTHROPIC_PRICING_URL: &str =
     "https://docs.anthropic.com/en/docs/about-claude/pricing.md";
@@ -75,60 +74,6 @@ impl LivePricing {
     }
 }
 
-impl PricingSnapshot {
-    /// Backdate only brand-new exact pricing keys to their earliest observed
-    /// usage. Existing keys keep retrieval-time effective dating so a provider
-    /// price change is never applied retroactively.
-    pub fn cover_unpriced_observed_usage(mut self, conn: &rusqlite::Connection) -> Result<Self> {
-        for interval in &mut self.intervals {
-            let existing: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM pricing_intervals
-                 WHERE provider = ?1 AND model_id = ?2 AND token_category = ?3
-                   AND service_tier IS ?4 AND speed IS ?5 AND region IS ?6
-                   AND processing_mode IS ?7 AND source_detail IS ?8 AND currency = 'USD'",
-                rusqlite::params![
-                    interval.provider.as_str(),
-                    interval.model_id,
-                    interval.token_category.as_str(),
-                    interval.dimensions.service_tier,
-                    interval.dimensions.speed,
-                    interval.dimensions.region,
-                    interval.dimensions.processing_mode,
-                    interval.dimensions.source_detail,
-                ],
-                |row| row.get(0),
-            )?;
-            if existing > 0 {
-                continue;
-            }
-            let earliest: Option<String> = conn.query_row(
-                "SELECT MIN(timestamp) FROM usage_billing_components
-                 WHERE provider = ?1 AND model_id = ?2 AND token_category = ?3
-                   AND service_tier IS ?4 AND speed IS ?5 AND region IS ?6
-                   AND processing_mode IS ?7 AND source_detail IS ?8",
-                rusqlite::params![
-                    interval.provider.as_str(),
-                    interval.model_id,
-                    interval.token_category.as_str(),
-                    interval.dimensions.service_tier,
-                    interval.dimensions.speed,
-                    interval.dimensions.region,
-                    interval.dimensions.processing_mode,
-                    interval.dimensions.source_detail,
-                ],
-                |row| row.get(0),
-            )?;
-            if let Some(earliest) = earliest {
-                let earliest = parse_canonical_utc_rfc3339(&earliest)?;
-                if earliest < interval.effective_from {
-                    interval.effective_from = earliest;
-                }
-            }
-        }
-        Ok(self)
-    }
-}
-
 fn fetch_document(url: &str) -> Result<String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(20)))
@@ -173,10 +118,19 @@ fn parse_anthropic_pricing(
     retrieved_at: NaiveDate,
     source: &str,
 ) -> Result<Vec<PricingInterval>> {
-    let model_ids = extract_model_ids(models, "claude-");
+    let mut model_ids = extract_model_ids(models, "claude-");
     if model_ids.is_empty() {
         bail!("Anthropic model document contains no Claude API model ids");
     }
+    // The overview only lists the current lineup. Keep reviewed exact identities
+    // for older and limited-availability models whose prices remain published.
+    model_ids.extend(
+        bundled_pricing_snapshot()?
+            .intervals()
+            .iter()
+            .filter(|interval| interval.provider == ProviderId::ClaudeCode)
+            .map(|interval| interval.model_id.clone()),
+    );
 
     let effective_from = midnight_utc(retrieved_at)?;
     let mut in_model_table = false;
@@ -326,7 +280,9 @@ fn supports_claude_us_inference(model_id: &str) -> bool {
         ["claude", "opus", major, minor, ..] | ["claude", "sonnet", major, minor, ..] => {
             major.parse::<u32>().ok().zip(minor.parse::<u32>().ok()) >= Some((4, 6))
         }
-        ["claude", "sonnet", major] => major.parse::<u32>().ok().is_some_and(|major| major >= 5),
+        ["claude", "opus", major] | ["claude", "sonnet", major] => {
+            major.parse::<u32>().ok().is_some_and(|major| major >= 5)
+        }
         _ => false,
     }
 }
@@ -337,6 +293,12 @@ fn parse_openai_pricing(
     source: &str,
 ) -> Result<Vec<PricingInterval>> {
     let effective_from = midnight_utc(retrieved_at)?;
+    if pricing
+        .lines()
+        .any(|line| line.trim() == "### Standard pricing data")
+    {
+        return parse_openai_markdown_pricing(pricing, effective_from, source);
+    }
     let standard = pricing
         .split_once("data-content-switcher-pane data-value=\"standard\"")
         .map(|(_, rest)| rest)
@@ -445,13 +407,95 @@ fn parse_openai_row(line: &str) -> Result<(String, Vec<Option<f64>>)> {
             }
         })
         .collect::<Result<Vec<_>>>()?;
-    if values.len() < 3 {
+    if !matches!(values.len(), 3 | 4) {
         bail!(
-            "OpenAI pricing row for {model_id} has {} values; expected at least 3",
+            "OpenAI pricing row for {model_id} has {} values; expected 3 or 4",
             values.len()
         );
     }
     Ok((model_id, values))
+}
+
+fn parse_openai_markdown_pricing(
+    pricing: &str,
+    effective_from: DateTime<Utc>,
+    source: &str,
+) -> Result<Vec<PricingInterval>> {
+    let mut lines = pricing
+        .lines()
+        .skip_while(|line| line.trim() != "### Standard pricing data")
+        .skip(1)
+        .skip_while(|line| line.trim().is_empty());
+    let header = markdown_cells(lines.next().unwrap_or_default());
+    let expected = [
+        "Model",
+        "Short context input",
+        "Short context cached input",
+        "Short context cache writes",
+        "Short context output",
+        "Long context input",
+        "Long context cached input",
+        "Long context cache writes",
+        "Long context output",
+    ];
+    if header != expected {
+        bail!("OpenAI standard pricing table has unexpected columns");
+    }
+    let separator = markdown_cells(lines.next().unwrap_or_default());
+    if separator.len() != expected.len()
+        || separator.iter().any(|cell| {
+            cell.trim_matches(':').len() < 3
+                || !cell.trim_matches(':').bytes().all(|byte| byte == b'-')
+        })
+    {
+        bail!("OpenAI standard pricing table lacks a Markdown separator");
+    }
+    let mut intervals = Vec::new();
+    for line in lines.take_while(|line| line.trim_start().starts_with('|')) {
+        let cells = markdown_cells(line);
+        if cells.len() != expected.len() {
+            bail!(
+                "OpenAI standard pricing row has {} columns; expected {}",
+                cells.len(),
+                expected.len()
+            );
+        }
+        let model_id = cells[0].split(" (").next().unwrap_or_default().trim();
+        if model_id.is_empty() {
+            bail!("OpenAI pricing row has an empty model id");
+        }
+        // Codex usage currently carries no context-pricing dimension. Preserve
+        // the existing base-rate estimate; never mistake long-context output or
+        // cache-write prices for the short-context output price.
+        for (category, column) in [
+            (TokenCategory::Input, 1),
+            (TokenCategory::CachedInput, 2),
+            (TokenCategory::Output, 4),
+            (TokenCategory::ReasoningOutput, 4),
+        ] {
+            if category == TokenCategory::CachedInput && cells[column] == "-" {
+                continue;
+            }
+            let row = interval(
+                ProviderId::Codex,
+                model_id,
+                category,
+                parse_mtok_rate(&cells[column])?,
+                PricingDimensions {
+                    processing_mode: Some("standard".into()),
+                    ..Default::default()
+                },
+                effective_from,
+                source,
+            );
+            crate::db::pricing::validate_interval(&row)?;
+            intervals.push(row);
+        }
+    }
+    if intervals.is_empty() {
+        bail!("OpenAI pricing document contained no standard text-token rows");
+    }
+    Ok(intervals)
 }
 
 fn interval(
@@ -662,6 +706,125 @@ rows={[
         .unwrap_err()
         .to_string();
         assert!(err.contains("standard pricing pane"));
+    }
+
+    const OPENAI_MARKDOWN: &str = r#"
+# Pricing
+### Standard pricing data
+
+| Model | Short context input | Short context cached input | Short context cache writes | Short context output | Long context input | Long context cached input | Long context cache writes | Long context output |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| gpt-6-astra | $10.00 | $1.00 | $12.50 | $50.00 | $20.00 | $2.00 | $25.00 | $75.00 |
+| gpt-5.6-sol | $4.00 | $0.40 | $5.00 | $20.00 | $8.00 | $0.80 | $10.00 | $30.00 |
+| gpt-5.4-pro (<272K context length) | $30.00 | - | - | $180.00 | $60.00 | - | - | $270.00 |
+| gpt-5.4-mini | $0.75 | $0.075 | - | $4.50 | - | - | - | - |
+
+### Batch pricing data
+| Model | Input | Cached input | Output |
+| --- | --- | --- | --- |
+| gpt-6-astra | $5.00 | $0.50 | $25.00 |
+"#;
+
+    #[test]
+    fn parses_openai_markdown_short_context_columns_only() {
+        let snapshot = LivePricing::from_openai_document(
+            OPENAI_MARKDOWN,
+            NaiveDate::from_ymd_opt(2026, 9, 10).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(snapshot.intervals().len(), 15);
+        for (model, input, cached, output) in [
+            ("gpt-6-astra", 10.0, Some(1.0), 50.0),
+            ("gpt-5.6-sol", 4.0, Some(0.4), 20.0),
+            ("gpt-5.4-pro", 30.0, None, 180.0),
+            ("gpt-5.4-mini", 0.75, Some(0.075), 4.5),
+        ] {
+            for (category, rate) in [
+                (TokenCategory::Input, Some(input)),
+                (TokenCategory::CachedInput, cached),
+                (TokenCategory::Output, Some(output)),
+                (TokenCategory::ReasoningOutput, Some(output)),
+            ] {
+                let row = snapshot
+                    .intervals()
+                    .iter()
+                    .find(|row| row.model_id == model && row.token_category == category);
+                assert_eq!(row.map(|row| row.rate_per_1m_tokens), rate);
+            }
+        }
+        assert!(
+            snapshot
+                .intervals()
+                .iter()
+                .all(|row| row.dimensions.processing_mode.as_deref() == Some("standard"))
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_openai_markdown_without_using_another_table() {
+        for pricing in [
+            OPENAI_MARKDOWN.replace("Short context output", "Different output"),
+            OPENAI_MARKDOWN.replace("| $75.00 |", "|"),
+            OPENAI_MARKDOWN.replace("$50.00", "-"),
+            OPENAI_MARKDOWN.replace("$50.00", "$NaN"),
+            OPENAI_MARKDOWN.replace("$50.00", "$-1"),
+            OPENAI_MARKDOWN.replace("| gpt-6-astra |", "| |"),
+            "### Standard pricing data\n".into(),
+        ] {
+            assert!(
+                LivePricing::from_openai_document(
+                    &pricing,
+                    NaiveDate::from_ymd_opt(2026, 9, 10).unwrap()
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_ambiguous_legacy_openai_price_columns() {
+        assert!(parse_openai_row(r#"["gpt-6-astra", 10, 1, 12.5, 50, 20, 2, 25, 75],"#).is_err());
+    }
+
+    #[test]
+    fn parses_new_claude_models_with_reviewed_legacy_ids_and_cache_read_footnotes() {
+        let pricing = r#"
+## Model pricing
+| Claude Fable 5.1 | $10 / MTok | $12.50 / MTok | $20 / MTok | $0.25 / MTok1 | $50 / MTok |
+| Claude Mythos 5.1 ([limited availability](https://anthropic.com/glasswing)) | $10 / MTok | $12.50 / MTok | $20 / MTok | $0.25 / MTok1 | $50 / MTok |
+| Claude Opus 5 | $5 / MTok | $6.25 / MTok | $10 / MTok | $0.50 / MTok | $25 / MTok |
+| Claude Opus 4.8 | $5 / MTok | $6.25 / MTok | $10 / MTok | $0.50 / MTok | $25 / MTok |
+| Claude Sonnet 5 | $2 / MTok | $2.50 / MTok | $4 / MTok | $0.20 / MTok | $10 / MTok |
+<Note>done</Note>
+"#;
+        let snapshot = LivePricing::from_anthropic_documents(
+            pricing,
+            "`claude-fable-5-1` `claude-opus-5` `claude-sonnet-5`",
+            NaiveDate::from_ymd_opt(2026, 9, 10).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(snapshot.intervals().len(), 60);
+        for model in ["claude-fable-5-1", "claude-mythos-5-1"] {
+            let cache_read = snapshot
+                .intervals()
+                .iter()
+                .find(|row| {
+                    row.model_id == model
+                        && row.token_category == TokenCategory::CacheRead
+                        && row.dimensions.is_default()
+                })
+                .unwrap();
+            assert_eq!(cache_read.rate_per_1m_tokens, 0.25);
+        }
+        for model in ["claude-opus-5", "claude-opus-4-8", "claude-sonnet-5"] {
+            assert!(
+                snapshot
+                    .intervals()
+                    .iter()
+                    .any(|row| row.model_id == model
+                        && row.dimensions.region.as_deref() == Some("us"))
+            );
+        }
     }
 
     #[test]

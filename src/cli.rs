@@ -164,7 +164,7 @@ pub struct Cli {
     pub chart_metric: ChartMetric,
 
     // -- Filters --
-    /// Filter by exact model id, or family alias (opus, sonnet, haiku)
+    /// Filter by exact model id, or family alias (opus, sonnet, haiku, fable, mythos)
     #[arg(long = "model", value_name = "MODEL")]
     pub model: Option<String>,
 
@@ -177,7 +177,7 @@ pub struct Cli {
     )]
     pub provider: ProviderArg,
 
-    /// Filter by model family (opus, sonnet, haiku)
+    /// Filter by model family (opus, sonnet, haiku, fable, mythos)
     #[arg(long = "model-family", value_name = "FAMILY")]
     pub model_family: Option<String>,
 

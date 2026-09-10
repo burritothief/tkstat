@@ -1015,12 +1015,13 @@ fn test_explain_cost_high_confidence_when_modifiers_and_reviewed_source_are_expl
     record.region = Some("us".into());
     db.insert_records(&[record]).unwrap();
 
-    let explanation = explain_cost(
+    let explanation = explain_cost_at(
         db.conn(),
         &QueryFilter {
             include_subagents: true,
             ..Default::default()
         },
+        "2026-05-24".parse().unwrap(),
     )
     .unwrap();
     assert_eq!(explanation.confidence, CostConfidence::High);
