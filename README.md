@@ -11,7 +11,7 @@ Download a prebuilt archive for macOS, Linux, or Windows from the
 current release with Cargo:
 
 ```
-cargo install --git https://github.com/burritothief/tkstat --tag v0.4.2 --locked tkstat
+cargo install --git https://github.com/burritothief/tkstat --tag v0.4.3 --locked tkstat
 ```
 
 To build a local checkout from source:
