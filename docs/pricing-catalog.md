@@ -23,6 +23,12 @@ GPT-5.4 mini, GPT-5.3 Codex, Claude Opus 4.8 and 5, Sonnet 5, and Fable/Mythos
 5 and 5.1. Claude entries include both cache-write TTLs and US inference;
 Fable/Mythos 5.1 use their published $0.25/MTok cache-read price.
 
+The October 8, 2026 additions cover GPT-6.1 Sol and Claude Opus 5.5. GPT-6.1
+Sol standard short-context rates are $2 input, $0.10 cached input, and $10
+output per million tokens. Claude Opus 5.5 rates are $4 input, $20 output,
+$5 for 5-minute cache writes, $8 for 1-hour cache writes, and $0.20 for cache
+reads per million tokens. Claude entries also cover US inference at 1.1x.
+
 After upgrading, run `tkstat --pricing-seed` to add bundled coverage, or
 `tkstat --pricing-refresh` to fetch current prices for both providers. Both
 commands extend brand-new, previously unpriced exact keys to their earliest

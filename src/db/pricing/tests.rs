@@ -879,6 +879,58 @@ fn test_seed_prices_new_codex_models_before_snapshot_and_repairs_cost_cache() {
 }
 
 #[test]
+fn test_seed_repairs_gpt_6_1_sol_and_opus_5_5_costs_for_existing_usage() {
+    let db = Database::open_in_memory().unwrap();
+    let mut codex = record("gpt-6.1-sol");
+    codex.provider = ProviderId::Codex;
+    codex.model = ModelFamily::Unknown;
+    codex.request_id = "sol".into();
+    codex.timestamp = "2026-09-30T12:00:00Z".parse().unwrap();
+    codex.processing_mode = Some("standard".into());
+    codex.input_tokens = 2_000_000;
+    codex.cached_input_tokens = 1_000_000;
+    codex.reasoning_output_tokens = 200_000;
+
+    let mut claude = record("claude-opus-5-5");
+    claude.request_id = "opus".into();
+    claude.timestamp = "2026-09-26T12:00:00Z".parse().unwrap();
+    claude.cache_read_tokens = 1_000_000;
+    claude.cache_creation_tokens = 2_000_000;
+    claude.cache_creation_5m_tokens = 1_000_000;
+    claude.cache_creation_1h_tokens = 1_000_000;
+    let mut claude_us = claude.clone();
+    claude_us.request_id = "opus-us".into();
+    claude_us.region = Some("us".into());
+
+    let mut claude_generic = claude.clone();
+    claude_generic.request_id = "opus-generic-cache".into();
+    claude_generic.cache_creation_tokens = 1_000_000;
+    claude_generic.cache_creation_5m_tokens = 0;
+    claude_generic.cache_creation_1h_tokens = 0;
+    let records = [codex, claude, claude_us, claude_generic];
+    db.insert_records(&records).unwrap();
+    for usage in &records {
+        assert!(calculate_record_cost(db.conn(), usage).is_err());
+    }
+    assert!(crate::db::query::query_summary(db.conn(), &Default::default()).is_err());
+
+    db.seed_pricing().unwrap();
+    assert_eq!(db.seed_pricing().unwrap(), 0);
+    let expected_costs = [12.1, 37.2, 40.92, 29.2];
+    for (usage, expected) in records.iter().zip(expected_costs) {
+        assert!((calculate_record_cost(db.conn(), usage).unwrap() - expected).abs() < 1e-9);
+    }
+    let summary = crate::db::query::query_summary(db.conn(), &Default::default()).unwrap();
+    assert!((summary.cost_usd - expected_costs.iter().sum::<f64>()).abs() < 1e-9);
+    assert!(
+        audit_pricing(db.conn())
+            .unwrap()
+            .iter()
+            .all(|finding| finding.severity != PricingAuditSeverity::Error)
+    );
+}
+
+#[test]
 fn test_new_claude_models_price_cache_ttls_and_us_inference() {
     let db = Database::open_in_memory().unwrap();
     db.seed_pricing().unwrap();

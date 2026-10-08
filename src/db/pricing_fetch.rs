@@ -715,6 +715,7 @@ rows={[
 | Model | Short context input | Short context cached input | Short context cache writes | Short context output | Long context input | Long context cached input | Long context cache writes | Long context output |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | gpt-6-astra | $10.00 | $1.00 | $12.50 | $50.00 | $20.00 | $2.00 | $25.00 | $75.00 |
+| gpt-6.1-sol | $2.00 | $0.10 | $2.50 | $10.00 | $4.00 | $0.20 | $5.00 | $15.00 |
 | gpt-5.6-sol | $4.00 | $0.40 | $5.00 | $20.00 | $8.00 | $0.80 | $10.00 | $30.00 |
 | gpt-5.4-pro (<272K context length) | $30.00 | - | - | $180.00 | $60.00 | - | - | $270.00 |
 | gpt-5.4-mini | $0.75 | $0.075 | - | $4.50 | - | - | - | - |
@@ -732,9 +733,10 @@ rows={[
             NaiveDate::from_ymd_opt(2026, 9, 10).unwrap(),
         )
         .unwrap();
-        assert_eq!(snapshot.intervals().len(), 15);
+        assert_eq!(snapshot.intervals().len(), 19);
         for (model, input, cached, output) in [
             ("gpt-6-astra", 10.0, Some(1.0), 50.0),
+            ("gpt-6.1-sol", 2.0, Some(0.1), 10.0),
             ("gpt-5.6-sol", 4.0, Some(0.4), 20.0),
             ("gpt-5.4-pro", 30.0, None, 180.0),
             ("gpt-5.4-mini", 0.75, Some(0.075), 4.5),

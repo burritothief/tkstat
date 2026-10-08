@@ -3,6 +3,18 @@
   "notes": "Bundled offline pricing snapshot used by tkstat --pricing-seed and --pricing-refresh. Review official provider pricing before relying on historical or newly announced models.",
   "sources": [
     {
+      "id": "openai-pricing-2026-10-08",
+      "url": "https://developers.openai.com/api/docs/pricing",
+      "retrieved_at": "2026-10-08",
+      "notes": "Reviewed GPT-6.1 Sol standard short-context input, cached input and output rates. Retrieval date is the effective date; seeding or refreshing can extend previously unpriced exact keys to observed usage. Codex estimates exclude long-context premiums and separately billed cache writes."
+    },
+    {
+      "id": "anthropic-opus-5-5-pricing-2026-10-08",
+      "url": "https://platform.claude.com/docs/en/models/opus-5-5/overview",
+      "retrieved_at": "2026-10-08",
+      "notes": "Reviewed Claude Opus 5.5 exact model ID, September 22 release date, standard input/output rates, both cache-write TTLs and $0.20/MTok cache reads. US inference uses the 1.1x multiplier documented at https://platform.claude.com/docs/en/about-claude/pricing."
+    },
+    {
       "id": "anthropic-claude-pricing-2026-05-23",
       "url": "https://www.anthropic.com/pricing",
       "retrieved_at": "2026-05-23",
@@ -34,6 +46,134 @@
     }
   ],
   "entries": [
+    {
+      "provider": "codex",
+      "model_ids": ["gpt-6.1-sol"],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-10-08T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:openai-pricing-2026-10-08",
+      "source_ref": "openai-pricing-2026-10-08",
+      "dimensions": {
+        "processing_mode": "standard"
+      },
+      "rates_per_1m_tokens": {
+        "input": 2.0,
+        "cached_input": 0.1,
+        "output": 10.0,
+        "reasoning_output": 10.0
+      },
+      "notes": "Standard short-context token pricing reviewed on the retrieval date. Reasoning tokens are included in output, not charged twice."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": ["claude-opus-5-5"],
+      "model_aliases": ["opus"],
+      "currency": "USD",
+      "effective_from": "2026-09-22T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-opus-5-5-pricing-2026-10-08",
+      "source_ref": "anthropic-opus-5-5-pricing-2026-10-08",
+      "dimensions": {},
+      "rates_per_1m_tokens": {
+        "input": 4.0,
+        "output": 20.0,
+        "cache_creation": 5.0,
+        "cache_read": 0.2
+      },
+      "notes": "Exact-model standard rates effective from release. Cache reads cost 0.05x input."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": ["claude-opus-5-5"],
+      "model_aliases": ["opus"],
+      "currency": "USD",
+      "effective_from": "2026-09-22T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-opus-5-5-pricing-2026-10-08",
+      "source_ref": "anthropic-opus-5-5-pricing-2026-10-08",
+      "dimensions": {
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 5.0
+      },
+      "notes": "Exact-model 5-minute prompt-cache write rates effective from release."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": ["claude-opus-5-5"],
+      "model_aliases": ["opus"],
+      "currency": "USD",
+      "effective_from": "2026-09-22T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-opus-5-5-pricing-2026-10-08",
+      "source_ref": "anthropic-opus-5-5-pricing-2026-10-08",
+      "dimensions": {
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 8.0
+      },
+      "notes": "Exact-model 1-hour prompt-cache write rates effective from release."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": ["claude-opus-5-5"],
+      "model_aliases": ["opus"],
+      "currency": "USD",
+      "effective_from": "2026-09-22T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-opus-5-5-pricing-2026-10-08",
+      "source_ref": "anthropic-opus-5-5-pricing-2026-10-08",
+      "dimensions": {
+        "region": "us"
+      },
+      "rates_per_1m_tokens": {
+        "input": 4.4,
+        "output": 22.0,
+        "cache_creation": 5.5,
+        "cache_read": 0.22
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": ["claude-opus-5-5"],
+      "model_aliases": ["opus"],
+      "currency": "USD",
+      "effective_from": "2026-09-22T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-opus-5-5-pricing-2026-10-08",
+      "source_ref": "anthropic-opus-5-5-pricing-2026-10-08",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 5.5
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": ["claude-opus-5-5"],
+      "model_aliases": ["opus"],
+      "currency": "USD",
+      "effective_from": "2026-09-22T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-opus-5-5-pricing-2026-10-08",
+      "source_ref": "anthropic-opus-5-5-pricing-2026-10-08",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 8.8
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
     {
       "provider": "claude-code",
       "model_ids": [
