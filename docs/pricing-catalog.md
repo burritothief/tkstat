@@ -29,6 +29,20 @@ output per million tokens. Claude Opus 5.5 rates are $4 input, $20 output,
 $5 for 5-minute cache writes, $8 for 1-hour cache writes, and $0.20 for cache
 reads per million tokens. Claude entries also cover US inference at 1.1x.
 
+The November 11, 2026 additions cover Claude Sonnet 5.5, Haiku 5.5, Fable 5.2,
+and Mythos 5.2. Each entry is effective from the model's release date. Rates
+per million tokens:
+
+| Model | Input | 5m cache write | 1h cache write | Cache read | Output |
+| --- | --- | --- | --- | --- | --- |
+| Sonnet 5.5 | $2 | $2.50 | $4 | $0.10 | $10 |
+| Haiku 5.5 | $0.10 | $0.125 | $0.20 | $0.01 | $0.50 |
+| Fable 5.2 / Mythos 5.2 | $8 | $10 | $16 | $0.20 | $40 |
+
+US inference is covered at 1.1x. Haiku 5.5 rates are for prompts up to 100,000
+tokens. Anthropic bills longer Haiku 5.5 prompts at 5x these rates. tkstat does
+not price by prompt length, so it underestimates the cost of those requests.
+
 After upgrading, run `tkstat --pricing-seed` to add bundled coverage, or
 `tkstat --pricing-refresh` to fetch current prices for both providers. Both
 commands extend brand-new, previously unpriced exact keys to their earliest

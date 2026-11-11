@@ -931,6 +931,70 @@ fn test_seed_repairs_gpt_6_1_sol_and_opus_5_5_costs_for_existing_usage() {
 }
 
 #[test]
+fn test_seed_repairs_sonnet_5_5_haiku_5_5_and_fable_mythos_5_2_costs_for_existing_usage() {
+    let db = Database::open_in_memory().unwrap();
+    let claude = |model_id: &str, timestamp: &str| {
+        let mut usage = record(model_id);
+        usage.model = ModelFamily::classify(model_id);
+        usage.request_id = model_id.into();
+        usage.timestamp = timestamp.parse().unwrap();
+        usage.cache_read_tokens = 1_000_000;
+        usage.cache_creation_tokens = 2_000_000;
+        usage.cache_creation_5m_tokens = 1_000_000;
+        usage.cache_creation_1h_tokens = 1_000_000;
+        usage
+    };
+    let us = |usage: &TokenRecord| {
+        let mut usage = usage.clone();
+        usage.request_id = format!("{}-us", usage.request_id);
+        usage.region = Some("us".into());
+        usage
+    };
+    let sonnet = claude("claude-sonnet-5-5", "2026-10-15T12:00:00Z");
+    // tkstat applies the up-to-100K-token tier to every Haiku 5.5 request.
+    let haiku = claude("claude-haiku-5-5", "2026-10-20T12:00:00Z");
+    let fable = claude("claude-fable-5-2", "2026-11-10T12:00:00Z");
+    let mythos = claude("claude-mythos-5-2", "2026-11-10T12:00:00Z");
+
+    // Logs without a TTL breakdown use the generic cache-creation rate.
+    let mut sonnet_generic = sonnet.clone();
+    sonnet_generic.request_id = "sonnet-generic-cache".into();
+    sonnet_generic.cache_creation_tokens = 1_000_000;
+    sonnet_generic.cache_creation_5m_tokens = 0;
+    sonnet_generic.cache_creation_1h_tokens = 0;
+    let records = [
+        us(&sonnet),
+        us(&haiku),
+        us(&fable),
+        sonnet,
+        haiku,
+        fable,
+        mythos,
+        sonnet_generic,
+    ];
+    db.insert_records(&records).unwrap();
+    for usage in &records {
+        assert!(calculate_record_cost(db.conn(), usage).is_err());
+    }
+    assert!(crate::db::query::query_summary(db.conn(), &Default::default()).is_err());
+
+    db.seed_pricing().unwrap();
+    assert_eq!(db.seed_pricing().unwrap(), 0);
+    let expected_costs = [20.46, 1.0285, 81.62, 18.6, 0.935, 74.2, 74.2, 14.6];
+    for (usage, expected) in records.iter().zip(expected_costs) {
+        assert!((calculate_record_cost(db.conn(), usage).unwrap() - expected).abs() < 1e-9);
+    }
+    let summary = crate::db::query::query_summary(db.conn(), &Default::default()).unwrap();
+    assert!((summary.cost_usd - expected_costs.iter().sum::<f64>()).abs() < 1e-9);
+    assert!(
+        audit_pricing(db.conn())
+            .unwrap()
+            .iter()
+            .all(|finding| finding.severity != PricingAuditSeverity::Error)
+    );
+}
+
+#[test]
 fn test_new_claude_models_price_cache_ttls_and_us_inference() {
     let db = Database::open_in_memory().unwrap();
     db.seed_pricing().unwrap();

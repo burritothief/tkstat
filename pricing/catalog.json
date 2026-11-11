@@ -9,6 +9,12 @@
       "notes": "Reviewed GPT-6.1 Sol standard short-context input, cached input and output rates. Retrieval date is the effective date; seeding or refreshing can extend previously unpriced exact keys to observed usage. Codex estimates exclude long-context premiums and separately billed cache writes."
     },
     {
+      "id": "anthropic-claude-pricing-2026-11-11",
+      "url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrieved_at": "2026-11-11",
+      "notes": "Reviewed standard rates, both cache-write TTLs and US inference (1.1x) for Claude Sonnet 5.5, Haiku 5.5, Fable 5.2 and Mythos 5.2. Exact IDs and release dates checked against https://platform.claude.com/docs/en/models/overview and the linked individual model pages. Sonnet 5.5 cache reads cost 0.05x input; Fable/Mythos 5.2 cache reads cost 0.025x input. Haiku 5.5 uses its rates for prompts up to 100,000 tokens; its 5x rates for longer prompts are not represented because tkstat has no prompt-length pricing dimension."
+    },
+    {
       "id": "anthropic-opus-5-5-pricing-2026-10-08",
       "url": "https://platform.claude.com/docs/en/models/opus-5-5/overview",
       "retrieved_at": "2026-10-08",
@@ -65,6 +71,396 @@
         "reasoning_output": 10.0
       },
       "notes": "Standard short-context token pricing reviewed on the retrieval date. Reasoning tokens are included in output, not charged twice."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ],
+      "model_aliases": [
+        "sonnet"
+      ],
+      "currency": "USD",
+      "effective_from": "2026-09-28T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {},
+      "rates_per_1m_tokens": {
+        "input": 2.0,
+        "output": 10.0,
+        "cache_creation": 2.5,
+        "cache_read": 0.1
+      },
+      "notes": "Exact-model standard rates effective from release. Cache reads cost 0.05x input."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ],
+      "model_aliases": [
+        "sonnet"
+      ],
+      "currency": "USD",
+      "effective_from": "2026-09-28T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 2.5
+      },
+      "notes": "Exact-model 5-minute prompt-cache write rates effective from release."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ],
+      "model_aliases": [
+        "sonnet"
+      ],
+      "currency": "USD",
+      "effective_from": "2026-09-28T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 4.0
+      },
+      "notes": "Exact-model 1-hour prompt-cache write rates effective from release."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ],
+      "model_aliases": [
+        "sonnet"
+      ],
+      "currency": "USD",
+      "effective_from": "2026-09-28T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {
+        "region": "us"
+      },
+      "rates_per_1m_tokens": {
+        "input": 2.2,
+        "output": 11.0,
+        "cache_creation": 2.75,
+        "cache_read": 0.11
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ],
+      "model_aliases": [
+        "sonnet"
+      ],
+      "currency": "USD",
+      "effective_from": "2026-09-28T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 2.75
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ],
+      "model_aliases": [
+        "sonnet"
+      ],
+      "currency": "USD",
+      "effective_from": "2026-09-28T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 4.4
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-haiku-5-5"
+      ],
+      "model_aliases": [
+        "haiku"
+      ],
+      "currency": "USD",
+      "effective_from": "2026-10-07T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {},
+      "rates_per_1m_tokens": {
+        "input": 0.1,
+        "output": 0.5,
+        "cache_creation": 0.125,
+        "cache_read": 0.01
+      },
+      "notes": "Exact-model rates for prompts up to 100,000 tokens, effective from release. Longer prompts cost 5x these rates; tkstat does not price by prompt length, so those requests are underestimated."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-haiku-5-5"
+      ],
+      "model_aliases": [
+        "haiku"
+      ],
+      "currency": "USD",
+      "effective_from": "2026-10-07T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 0.125
+      },
+      "notes": "Exact-model 5-minute prompt-cache write rates for prompts up to 100,000 tokens effective from release."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-haiku-5-5"
+      ],
+      "model_aliases": [
+        "haiku"
+      ],
+      "currency": "USD",
+      "effective_from": "2026-10-07T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 0.2
+      },
+      "notes": "Exact-model 1-hour prompt-cache write rates for prompts up to 100,000 tokens effective from release."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-haiku-5-5"
+      ],
+      "model_aliases": [
+        "haiku"
+      ],
+      "currency": "USD",
+      "effective_from": "2026-10-07T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {
+        "region": "us"
+      },
+      "rates_per_1m_tokens": {
+        "input": 0.11,
+        "output": 0.55,
+        "cache_creation": 0.1375,
+        "cache_read": 0.011
+      },
+      "notes": "Exact-model rates for prompts up to 100,000 tokens effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-haiku-5-5"
+      ],
+      "model_aliases": [
+        "haiku"
+      ],
+      "currency": "USD",
+      "effective_from": "2026-10-07T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 0.1375
+      },
+      "notes": "Exact-model rates for prompts up to 100,000 tokens effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-haiku-5-5"
+      ],
+      "model_aliases": [
+        "haiku"
+      ],
+      "currency": "USD",
+      "effective_from": "2026-10-07T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 0.22
+      },
+      "notes": "Exact-model rates for prompts up to 100,000 tokens effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5-2",
+        "claude-mythos-5-2"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-11-09T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {},
+      "rates_per_1m_tokens": {
+        "input": 8.0,
+        "output": 40.0,
+        "cache_creation": 10.0,
+        "cache_read": 0.2
+      },
+      "notes": "Exact-model standard rates effective from release. Cache reads cost 0.025x input."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5-2",
+        "claude-mythos-5-2"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-11-09T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 10.0
+      },
+      "notes": "Exact-model 5-minute prompt-cache write rates effective from release."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5-2",
+        "claude-mythos-5-2"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-11-09T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 16.0
+      },
+      "notes": "Exact-model 1-hour prompt-cache write rates effective from release."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5-2",
+        "claude-mythos-5-2"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-11-09T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {
+        "region": "us"
+      },
+      "rates_per_1m_tokens": {
+        "input": 8.8,
+        "output": 44.0,
+        "cache_creation": 11.0,
+        "cache_read": 0.22
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5-2",
+        "claude-mythos-5-2"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-11-09T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_5m"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 11.0
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
+    },
+    {
+      "provider": "claude-code",
+      "model_ids": [
+        "claude-fable-5-2",
+        "claude-mythos-5-2"
+      ],
+      "model_aliases": [],
+      "currency": "USD",
+      "effective_from": "2026-11-09T00:00:00+00:00",
+      "effective_to": null,
+      "source": "seed:anthropic-claude-pricing-2026-11-11",
+      "source_ref": "anthropic-claude-pricing-2026-11-11",
+      "dimensions": {
+        "region": "us",
+        "source_detail": "ephemeral_1h"
+      },
+      "rates_per_1m_tokens": {
+        "cache_creation": 17.6
+      },
+      "notes": "Exact-model rates effective from release; US inference includes the 1.1x multiplier."
     },
     {
       "provider": "claude-code",
